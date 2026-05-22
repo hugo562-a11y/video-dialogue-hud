@@ -1,0 +1,343 @@
+"""ScriptPanelMixin — 右側腳本面板的建構、更新與互動。
+
+改善：
+- 「無講話」行壓縮顯示（僅時間 + 圖示，不顯示 entry）
+- 修改說話者用 CTkComboBox，允許直接輸入新名稱
+- select_dialogue_row 後自動捲動到該行
+- refresh_script_panel 在行數不變時只更新內容，避免整體重建
+"""
+from __future__ import annotations
+
+import tkinter as tk
+import customtkinter as ctk
+import pandas as pd
+
+from core.constants import SILENCE_SPEAKER
+from core.utils import parse_time_range, seconds_to_frame
+
+
+class ScriptPanelMixin:
+
+    # ------------------------------------------------------------------ 建構
+    def refresh_script_panel(self):
+        if not hasattr(self, "script_scroll"):
+            return
+        for child in self.script_scroll.winfo_children():
+            child.destroy()
+        self.script_row_widgets = {}
+        dp = self.renderer.data_processor
+        if hasattr(self, "btn_save_data"):
+            self.btn_save_data.configure(state="normal" if dp.has_data() else "disabled")
+        if not dp.has_data():
+            ctk.CTkLabel(self.script_scroll, text="尚未建立腳本", text_color="#8A93A6", anchor="w").pack(
+                fill="x", padx=8, pady=10
+            )
+            return
+        time_col, speaker_col, text_col = dp.get_columns()
+        if time_col is None or speaker_col is None or text_col is None:
+            ctk.CTkLabel(self.script_scroll, text="腳本欄位不足", text_color="#FCA5A5").pack(fill="x", padx=8, pady=10)
+            return
+
+        speakers = self.get_person_speaker_options()
+        self._script_row_loading = True
+        for row_idx, row in dp.df.iterrows():
+            speaker = "" if pd.isna(row[speaker_col]) else str(row[speaker_col]).strip()
+            text    = "" if pd.isna(row[text_col])    else str(row[text_col]).strip()
+            time_text = "" if pd.isna(row[time_col])  else str(row[time_col]).strip()
+            is_selected = row_idx == self.selected_dialogue_row
+            is_silence  = speaker == SILENCE_SPEAKER
+
+            bg = "#28364A" if is_selected else ("#252A34" if is_silence else "#1B2230")
+            line = ctk.CTkFrame(
+                self.script_scroll, fg_color=bg,
+                border_width=1 if is_selected else 0, border_color="#FBBF24",
+            )
+            line.pack(fill="x", padx=4, pady=(1 if is_silence else 3))
+            line.grid_columnconfigure(1, weight=1)
+
+            # 時間按鈕（點擊跳轉）
+            time_btn = ctk.CTkButton(
+                line, text=time_text or "--:--",
+                width=98, height=26 if is_silence else 28,
+                fg_color="#334155", hover_color="#475569",
+                command=lambda idx=row_idx: self.select_dialogue_row(idx, seek=True),
+            )
+            time_btn.grid(row=0, column=0, padx=(6, 4), pady=(4 if is_silence else 6, 2 if is_silence else 2), sticky="w")
+
+            if is_silence:
+                # 壓縮顯示：靜默段不需要說話者 / 文字 entry
+                ctk.CTkLabel(
+                    line, text="〈無講話〉",
+                    text_color="#4B5563", anchor="w",
+                    font=("Microsoft JhengHei UI", 11),
+                ).grid(row=0, column=1, padx=4, pady=4, sticky="w")
+                ctk.CTkButton(
+                    line, text="刪", width=28, height=26,
+                    fg_color="#8A3A3A", hover_color="#A64848",
+                    command=lambda idx=row_idx: self.delete_dialogue_from_panel(idx),
+                ).grid(row=0, column=2, padx=(4, 6), pady=4, sticky="e")
+                line.bind("<Button-1>", lambda _e, idx=row_idx: self.select_dialogue_row(idx, seek=True))
+                self.script_row_widgets[row_idx] = {"frame": line, "text": None, "speaker": None}
+                continue
+
+            # ---- 一般對話行 ----
+            # 說話者 ComboBox（可直接輸入）
+            combo_values = [s for s in speakers if s != SILENCE_SPEAKER] or ["人物 1"]
+            speaker_var = ctk.StringVar(value=speaker)
+            speaker_combo = ctk.CTkComboBox(
+                line, values=combo_values,
+                variable=speaker_var,
+                width=116, height=28,
+                command=lambda value, idx=row_idx: self.change_script_row_speaker(idx, value),
+            )
+            speaker_combo.set(speaker)
+            speaker_combo.grid(row=0, column=1, padx=4, pady=(6, 2), sticky="ew")
+            speaker_combo.bind(
+                "<FocusOut>",
+                lambda _e, idx=row_idx, var=speaker_var: self.change_script_row_speaker(idx, var.get()),
+            )
+            speaker_combo.bind(
+                "<Return>",
+                lambda _e, idx=row_idx, var=speaker_var: self.change_script_row_speaker(idx, var.get()),
+            )
+
+            # 操作按鈕
+            ops = ctk.CTkFrame(line, fg_color="transparent")
+            ops.grid(row=0, column=2, padx=(4, 6), pady=(6, 2), sticky="e")
+            ctk.CTkButton(ops, text="▶", width=28, height=28,
+                          command=lambda idx=row_idx: self.play_dialogue_row(idx)).pack(side="left", padx=1)
+            ctk.CTkButton(ops, text="合", width=28, height=28,
+                          command=lambda idx=row_idx: self.merge_dialogue_from_panel(idx)).pack(side="left", padx=1)
+            ctk.CTkButton(ops, text="刪", width=28, height=28, fg_color="#8A3A3A", hover_color="#A64848",
+                          command=lambda idx=row_idx: self.delete_dialogue_from_panel(idx)).pack(side="left", padx=1)
+            ctk.CTkButton(ops, text="剪", width=28, height=28, fg_color="#7C3AED", hover_color="#8B5CF6",
+                          command=lambda idx=row_idx: self.cut_dialogue_from_panel(idx)).pack(side="left", padx=1)
+
+            # 文字輸入
+            text_entry = ctk.CTkEntry(line)
+            text_entry.insert(0, text)
+            text_entry.grid(row=1, column=0, columnspan=3, sticky="ew", padx=6, pady=(2, 6))
+            text_entry.bind("<FocusIn>",  lambda _e, idx=row_idx: self.select_dialogue_row(idx, seek=False))
+            text_entry.bind("<KeyRelease>", lambda _e, idx=row_idx, entry=text_entry: self.update_script_row_text(idx, entry.get()))
+            line.bind("<Button-1>", lambda _e, idx=row_idx: self.select_dialogue_row(idx, seek=True))
+
+            self.script_row_widgets[row_idx] = {"frame": line, "text": text_entry, "speaker": speaker_var}
+
+        self._script_row_loading = False
+        self.update_script_selection_styles()
+
+    # ------------------------------------------------------------------ 選取樣式
+    def update_script_selection_styles(self):
+        if not hasattr(self, "script_row_widgets"):
+            return
+        dp = self.renderer.data_processor
+        time_col, speaker_col, _ = dp.get_columns() if dp.has_data() else (None, None, None)
+        for row_idx, widgets in self.script_row_widgets.items():
+            frame = widgets.get("frame")
+            if frame is None or not frame.winfo_exists():
+                continue
+            is_selected = row_idx == self.selected_dialogue_row
+            speaker = ""
+            if speaker_col is not None and dp.has_data() and row_idx in dp.df.index:
+                value = dp.df.at[row_idx, speaker_col]
+                speaker = "" if pd.isna(value) else str(value).strip()
+            is_silence = speaker == SILENCE_SPEAKER
+            bg = "#28364A" if is_selected else ("#252A34" if is_silence else "#1B2230")
+            try:
+                frame.configure(fg_color=bg, border_width=1 if is_selected else 0, border_color="#FBBF24")
+            except Exception:
+                frame.configure(fg_color=bg)
+
+    # ------------------------------------------------------------------ 自動捲動
+    def _scroll_to_selected_row(self):
+        if self.selected_dialogue_row not in self.script_row_widgets:
+            return
+        widgets = self.script_row_widgets.get(self.selected_dialogue_row)
+        if not widgets:
+            return
+        frame = widgets.get("frame")
+        if frame is None or not frame.winfo_exists():
+            return
+        self.after(60, lambda: self._do_scroll_to_widget(frame))
+
+    def _do_scroll_to_widget(self, frame):
+        try:
+            scroll_canvas = self.script_scroll._parent_canvas
+            self.script_scroll.update_idletasks()
+            fy = frame.winfo_y()
+            total_h = self.script_scroll._scrollable_frame.winfo_height()
+            canvas_h = scroll_canvas.winfo_height()
+            if total_h <= canvas_h:
+                return
+            # 讓目標行顯示在捲動視窗約 30% 處
+            pos = max(0.0, min(1.0, (fy - canvas_h * 0.30) / total_h))
+            scroll_canvas.yview_moveto(pos)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ 當前句顯示
+    def update_current_sentence_label(self):
+        if not hasattr(self, "current_sentence_label"):
+            return
+        dp = self.renderer.data_processor
+        if self.selected_dialogue_row is None or not dp.has_data() or self.selected_dialogue_row not in dp.df.index:
+            self.current_sentence_label.configure(text="在右側腳本列表修改文字與說話者")
+            return
+        time_col, _, _ = dp.get_columns()
+        speaker, text = dp.get_dialogue_row_values(self.selected_dialogue_row)
+        time_text = ""
+        if time_col is not None:
+            value = dp.df.at[self.selected_dialogue_row, time_col]
+            time_text = "" if pd.isna(value) else str(value).strip()
+        preview = text.replace("\n", " ").strip()
+        if len(preview) > 28:
+            preview = preview[:28] + "..."
+        self.current_sentence_label.configure(text=f"{time_text}  {speaker}  {preview}".strip())
+
+    # ------------------------------------------------------------------ 選取列
+    def selected_script_text_widget(self):
+        widgets = getattr(self, "script_row_widgets", {}).get(self.selected_dialogue_row)
+        if not widgets:
+            return None
+        entry = widgets.get("text")
+        if entry is not None and entry.winfo_exists():
+            return entry
+        return None
+
+    def current_dialogue_text_and_cursor(self):
+        """優先使用右側腳本面板 entry 的文字與游標位置。"""
+        entry = self.selected_script_text_widget()
+        if entry is not None:
+            try:
+                return entry.get(), entry.index("insert")
+            except Exception:
+                return entry.get(), len(entry.get()) // 2
+        text = self.entry_text.get()
+        try:
+            return text, self.entry_text.index("insert")
+        except Exception:
+            return text, len(text) // 2
+
+    def select_dialogue_row(self, row_idx, seek: bool = True):
+        dp = self.renderer.data_processor
+        if not dp.has_data() or row_idx is None or row_idx not in dp.df.index:
+            return
+        time_col, _, _ = dp.get_columns()
+        start, _ = parse_time_range(dp.df.at[row_idx, time_col]) if time_col is not None else (None, None)
+        self.selected_dialogue_row = row_idx
+        speaker, text = dp.get_dialogue_row_values(row_idx)
+        matched_tid = next((tid for tid, name in self.renderer.yolo_id_to_speaker.items() if name == speaker), None)
+        self._loading_person_fields = True
+        if matched_tid is not None:
+            self.entry_id.delete(0, "end")
+            self.entry_id.insert(0, str(matched_tid))
+        self.entry_speaker.delete(0, "end")
+        self.entry_speaker.insert(0, speaker)
+        self.entry_text.delete(0, "end")
+        self.entry_text.insert(0, text)
+        self._loading_person_fields = False
+        self.update_current_sentence_label()
+        if seek and start is not None and self.renderer.total_frames:
+            # +0.05s 避免浮點取整落在對話起始幀前一格
+            frame = seconds_to_frame(start + 0.05, self.renderer.fps, self.renderer.total_frames)
+            self.stop_preview_playback()
+            if self.slider_timeline.cget("state") == "normal":
+                self.slider_timeline.set(frame)
+            self.update_timecode_and_waveform(frame)
+            self._render_scrub(frame)
+        else:
+            self.draw_waveform(self.current_frame())
+        self.update_script_selection_styles()
+        self._scroll_to_selected_row()
+
+    # ------------------------------------------------------------------ 修改
+    def change_script_row_speaker(self, row_idx, speaker: str):
+        if self._script_row_loading:
+            return
+        speaker = speaker.strip()
+        if not speaker:
+            return
+        dp = self.renderer.data_processor
+        if not dp.has_data() or row_idx not in dp.df.index:
+            return
+        current, _ = dp.get_dialogue_row_values(row_idx)
+        if current == speaker:
+            return
+        self.push_undo_state("腳本改說話者")
+        if dp.update_dialogue_speaker(row_idx, speaker):
+            self.selected_dialogue_row = row_idx
+            self.renderer.bubble_cache.clear()
+            self.update_script_selection_styles()
+            self.refresh_current_preview()
+
+    def update_script_row_text(self, row_idx, text: str):
+        if self._script_row_loading:
+            return
+        dp = self.renderer.data_processor
+        if not dp.has_data() or row_idx not in dp.df.index:
+            return
+        _, old_text = dp.get_dialogue_row_values(row_idx)
+        if old_text == text:
+            return
+        if self._typing_undo_row != row_idx:
+            self._typing_undo_row = row_idx
+            self._typing_undo_original = old_text
+        if self._typing_undo_original is not None:
+            self.push_undo_state("腳本文字")
+            self._typing_undo_original = None
+        if dp.update_dialogue_row(row_idx, text):
+            self.selected_dialogue_row = row_idx
+            self.renderer.bubble_cache.clear()
+            self._loading_person_fields = True
+            self.entry_text.delete(0, "end")
+            self.entry_text.insert(0, text)
+            self._loading_person_fields = False
+            self.draw_waveform(self.current_frame())
+            self.update_script_selection_styles()
+            self.update_current_sentence_label()
+            self.schedule_script_preview_refresh()
+
+    def schedule_script_preview_refresh(self, delay_ms: int = 180):
+        if self.slider_timeline.cget("state") != "normal":
+            return
+        after_id = getattr(self, "_script_preview_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        self._script_preview_after_id = self.after(delay_ms, self._run_script_preview_refresh)
+
+    def _run_script_preview_refresh(self):
+        self._script_preview_after_id = None
+        self.refresh_current_preview()
+
+    def delete_dialogue_from_panel(self, row_idx):
+        self.selected_dialogue_row = row_idx
+        self.delete_selected_dialogue()
+
+    def cut_dialogue_from_panel(self, row_idx):
+        self.selected_dialogue_row = row_idx
+        self.cut_selected_dialogue_range()
+
+    def merge_dialogue_from_panel(self, row_idx):
+        self.selected_dialogue_row = row_idx
+        self.merge_selected_dialogue()
+
+    def play_dialogue_row(self, row_idx):
+        self.select_dialogue_row(row_idx, seek=True)
+        self.play_current_sentence()
+
+    # ------------------------------------------------------------------ 說話者選項
+    def get_person_speaker_options(self) -> list[str]:
+        count = max(len(self.renderer.person_rois), self.renderer.expected_people_count, 1)
+        unique = []
+        for idx in range(1, count + 1):
+            name = self.renderer.yolo_id_to_speaker.get(idx, f"人物 {idx}")
+            if name and name not in unique:
+                unique.append(name)
+        for value in self.renderer.data_processor.get_unique_speakers():
+            if value and value not in unique:
+                unique.append(value)
+        unique.append(SILENCE_SPEAKER)
+        return unique
