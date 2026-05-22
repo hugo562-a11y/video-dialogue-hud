@@ -26,6 +26,7 @@ class ControlsMixin:
             "df_path": dp.path,
             "cut_ranges": list(self.renderer.cut_ranges),
             "speakers": dict(self.renderer.yolo_id_to_speaker),
+            "person_styles": {tid: dict(style) for tid, style in self.renderer.person_styles.items()},
             "bubble_offsets": dict(self.renderer.bubble_offsets),
             "selected_row": self.selected_dialogue_row,
         }
@@ -40,8 +41,11 @@ class ControlsMixin:
         dp = self.renderer.data_processor
         dp.df = None if state["df"] is None else state["df"].copy(deep=True)
         dp.path = state.get("df_path")
+        if hasattr(dp, "invalidate_cache"):
+            dp.invalidate_cache()
         self.renderer.set_cut_ranges(state.get("cut_ranges", []))
         self.renderer.yolo_id_to_speaker = dict(state.get("speakers", {}))
+        self.renderer.person_styles = {tid: dict(style) for tid, style in state.get("person_styles", {}).items()}
         self.renderer.bubble_offsets = dict(state.get("bubble_offsets", {}))
         self.selected_dialogue_row = state.get("selected_row")
         self.renderer.bubble_cache.clear()
@@ -239,7 +243,7 @@ class ControlsMixin:
             self.btn_toggle_log.configure(text="顯示記錄")
             self._log_expanded = False
         else:
-            self.log_box.grid(row=14, column=0, sticky="nsew", padx=12, pady=(4, 12))
+            self.log_box.grid(row=12, column=0, sticky="nsew", padx=12, pady=(4, 12))
             self.btn_toggle_log.configure(text="隱藏記錄")
             self._log_expanded = True
 
@@ -262,8 +266,8 @@ class ControlsMixin:
                         if msg.get("request_id") != self._preview_request_id:
                             continue
                         self._preview_render_pending = False
-                        self.set_preview_image(Image.fromarray(msg["img"]), reset_view=False)
                         self.preview_boxes = msg.get("boxes", [])
+                        self.set_preview_image(Image.fromarray(msg["img"]), reset_view=False)
                     elif msg["type"] == "preview_done":
                         if msg.get("request_id") == self._preview_request_id:
                             self._preview_render_pending = False
@@ -305,7 +309,6 @@ class ControlsMixin:
             return
         if self._loading_person_fields:
             return
-        self.renderer.settings["bubble_style"] = self.style_var.get()
         self.renderer.settings["bubble_pos"] = "auto"
         speaker = self.entry_speaker.get().strip()
         if speaker:

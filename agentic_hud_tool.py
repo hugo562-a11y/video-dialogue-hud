@@ -1,5 +1,11 @@
 # pip install customtkinter opencv-python ultralytics pandas openpyxl pillow numpy
 
+try:
+    import tqdm
+    tqdm.tqdm.monitor_interval = 0
+except Exception:
+    pass
+
 import atexit
 import os
 import queue

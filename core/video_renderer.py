@@ -25,6 +25,19 @@ from core.utils import (
     available_output_path,
 )
 
+BUBBLE_STYLE_OPTIONS = ["classic", "oval", "capsule", "tech", "sharp"]
+BUBBLE_POSITION_OPTIONS = ["auto", "top", "bottom", "left", "right"]
+BUBBLE_COLOR_OPTIONS = {
+    "藍": ((31, 127, 181, 235), (255, 255, 255, 255)),
+    "紅": ((205, 73, 73, 235), (255, 255, 255, 255)),
+    "綠": ((49, 163, 98, 235), (255, 255, 255, 255)),
+    "黃": ((230, 177, 54, 240), (20, 20, 20, 255)),
+    "紫": ((118, 91, 171, 235), (255, 255, 255, 255)),
+    "青": ((37, 161, 154, 235), (255, 255, 255, 255)),
+}
+_BUBBLE_COLOR_NAMES = list(BUBBLE_COLOR_OPTIONS.keys())
+_BUBBLE_POSITION_DEFAULTS = ["top", "bottom", "right", "left"]
+
 
 class VideoRenderer:
     def __init__(self, ui_callback=None):
@@ -33,8 +46,9 @@ class VideoRenderer:
         self.video_path: str | None = None
         self.data_processor = DataProcessor()
 
-        self.settings: dict = {"bubble_style": "classic", "bubble_pos": "auto"}
+        self.settings: dict = {"bubble_pos": "auto"}
         self.style: dict = {"font_size": 72, "font_color": (255, 255, 255, 255)}
+        self.person_styles: dict = {}
 
         self.is_processing = False
         self.tracking_data: dict = {}
@@ -102,9 +116,63 @@ class VideoRenderer:
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ 氣泡
+    def default_bubble_color_name(self, track_id: int) -> str:
+        return _BUBBLE_COLOR_NAMES[int(track_id) % len(_BUBBLE_COLOR_NAMES)]
+
+    def bubble_color_rgb(self, track_id: int) -> tuple[int, int, int]:
+        color_name = self.get_person_bubble_style(track_id)["color"]
+        rgba, _ = BUBBLE_COLOR_OPTIONS[color_name]
+        return int(rgba[0]), int(rgba[1]), int(rgba[2])
+
+    def bubble_color_hex(self, track_id: int) -> str:
+        red, green, blue = self.bubble_color_rgb(track_id)
+        return f"#{red:02X}{green:02X}{blue:02X}"
+
+    def bubble_text_hex(self, track_id: int) -> str:
+        red, green, blue = self.bubble_color_rgb(track_id)
+        luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        return "#111827" if luminance >= 150 else "#FFFFFF"
+
+    def default_bubble_position(self, track_id: int) -> str:
+        return _BUBBLE_POSITION_DEFAULTS[(max(1, int(track_id or 1)) - 1) % len(_BUBBLE_POSITION_DEFAULTS)]
+
+    def get_person_bubble_style(self, track_id: int) -> dict:
+        track_id = int(track_id or 0)
+        existing = self.person_styles.get(track_id, {})
+        style_name = existing.get("style") or "classic"
+        color_name = existing.get("color") or self.default_bubble_color_name(track_id)
+        position = existing.get("position") or self.default_bubble_position(track_id)
+        if style_name not in BUBBLE_STYLE_OPTIONS:
+            style_name = "classic"
+        if color_name not in BUBBLE_COLOR_OPTIONS:
+            color_name = self.default_bubble_color_name(track_id)
+        if position not in BUBBLE_POSITION_OPTIONS:
+            position = self.default_bubble_position(track_id)
+        return {"style": style_name, "color": color_name, "position": position}
+
+    def set_person_bubble_style(
+        self,
+        track_id: int,
+        style_name: str | None = None,
+        color_name: str | None = None,
+        position: str | None = None,
+    ):
+        track_id = int(track_id or 0)
+        current = self.get_person_bubble_style(track_id)
+        if style_name in BUBBLE_STYLE_OPTIONS:
+            current["style"] = style_name
+        if color_name in BUBBLE_COLOR_OPTIONS:
+            current["color"] = color_name
+        if position in BUBBLE_POSITION_OPTIONS:
+            current["position"] = position
+        self.person_styles[track_id] = current
+        self.bubble_cache.clear()
+
     def get_speech_bubble_img(self, text: str, pos: str = "top", track_id: int = 0):
-        style = self.settings.get("bubble_style", "classic")
-        cache_key = (text, pos, track_id, style, self.style["font_size"], self.style["font_color"])
+        person_style = self.get_person_bubble_style(track_id)
+        style = person_style["style"]
+        color_name = person_style["color"]
+        cache_key = (text, pos, track_id, style, color_name, self.style["font_size"], self.style["font_color"])
         if cache_key in self.bubble_cache:
             return self.bubble_cache[cache_key]
 
@@ -113,15 +181,7 @@ class VideoRenderer:
         font = self._load_font(font_size)
         wrapped = self._wrap_text(text)
 
-        palette = [
-            ((31, 127, 181, 235), (255, 255, 255, 255)),
-            ((205, 73, 73, 235),  (255, 255, 255, 255)),
-            ((49, 163, 98, 235),  (255, 255, 255, 255)),
-            ((230, 177, 54, 240), (20, 20, 20, 255)),
-            ((118, 91, 171, 235), (255, 255, 255, 255)),
-            ((37, 161, 154, 235), (255, 255, 255, 255)),
-        ]
-        bg_col, default_text_col = palette[int(track_id) % len(palette)]
+        bg_col, default_text_col = BUBBLE_COLOR_OPTIONS[color_name]
         text_col = self.style.get("font_color") or default_text_col
 
         measure_img = Image.new("RGBA", (1, 1))
@@ -179,7 +239,7 @@ class VideoRenderer:
         self.bubble_cache[cache_key] = bgra
         return bgra
 
-    def draw_speech_bubble(self, frame, text: str, target_id: int, all_boxes: list):
+    def draw_speech_bubble(self, frame, text: str, target_id: int, all_boxes: list, draw_connector: bool = False):
         if not text:
             return
         target = next((box for box in all_boxes if box["id"] == target_id), None)
@@ -208,11 +268,12 @@ class VideoRenderer:
                     return True
             return False
 
-        pos_setting = self.settings.get("bubble_pos", "auto")
+        pos_setting = self.get_person_bubble_style(target_id).get("position", "auto")
         if pos_setting in positions:
             chosen = pos_setting
         else:
-            order = [self.last_positions.get(target_id, "top"), "top", "bottom", "right", "left"]
+            preferred = self.default_bubble_position(target_id)
+            order = [self.last_positions.get(target_id, preferred), preferred, "top", "bottom", "right", "left"]
             chosen = next((p for p in order if p in positions and not blocked(*positions[p])), "top")
         self.last_positions[target_id] = chosen
 
@@ -228,12 +289,84 @@ class VideoRenderer:
         y_end = min(fh, py + bh)
         if x_end <= px or y_end <= py:
             return
+        if draw_connector:
+            self._draw_bubble_connector(frame, target, chosen, (px, py, px + bw, py + bh))
         overlay = bubble[0:y_end - py, 0:x_end - px]
         alpha = overlay[:, :, 3] / 255.0
         for channel in range(3):
             frame[py:y_end, px:x_end, channel] = (
                 alpha * overlay[:, :, channel] + (1.0 - alpha) * frame[py:y_end, px:x_end, channel]
             ).astype(np.uint8)
+
+    def _draw_bubble_connector(self, frame, target: dict, position: str, rect: tuple[int, int, int, int]):
+        fh, fw = frame.shape[:2]
+        bx1, by1, bx2, by2 = rect
+        x1, y1, x2, y2 = target["bbox"]
+        mouth_x = int((x1 + x2) / 2)
+        mouth_y = int(y1 + max(1, y2 - y1) * 0.68)
+        mouth_x = max(0, min(fw - 1, mouth_x))
+        mouth_y = max(0, min(fh - 1, mouth_y))
+
+        bubble_anchor = self._connector_bubble_anchor(position, rect)
+        target_anchor = self._connector_target_anchor(position, (x1, y1, x2, y2), mouth_x, mouth_y)
+        ax = max(0, min(fw - 1, int(bubble_anchor[0])))
+        ay = max(0, min(fh - 1, int(bubble_anchor[1])))
+        tx = max(0, min(fw - 1, int(target_anchor[0])))
+        ty = max(0, min(fh - 1, int(target_anchor[1])))
+
+        mid_x = (ax + tx) / 2
+        mid_y = (ay + ty) / 2
+        if position in {"top", "bottom"}:
+            bend = -abs(ty - ay) * 0.16 if position == "bottom" else abs(ty - ay) * 0.16
+            control = (mid_x, mid_y + bend)
+        else:
+            bend = -abs(tx - ax) * 0.16 if position == "right" else abs(tx - ax) * 0.16
+            control = (mid_x + bend, mid_y)
+        curve = self._quadratic_curve((ax, ay), control, (tx, ty))
+
+        overlay = frame.copy()
+        cv2.polylines(overlay, [curve], False, (20, 24, 32), 3, cv2.LINE_AA)
+        cv2.polylines(overlay, [curve], False, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.circle(overlay, (tx, ty), 2, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.58, frame, 0.42, 0, frame)
+
+    def _connector_bubble_anchor(self, position: str, rect: tuple[int, int, int, int]) -> tuple[float, float]:
+        bx1, by1, bx2, by2 = rect
+        if position == "bottom":
+            return (bx1 + bx2) / 2, by1
+        if position == "left":
+            return bx2, (by1 + by2) / 2
+        if position == "right":
+            return bx1, (by1 + by2) / 2
+        return (bx1 + bx2) / 2, by2
+
+    def _connector_target_anchor(
+        self,
+        position: str,
+        bbox: tuple[float, float, float, float],
+        mouth_x: int,
+        mouth_y: int,
+    ) -> tuple[float, float]:
+        x1, y1, x2, y2 = bbox
+        if position == "bottom":
+            return mouth_x, y2
+        if position == "top":
+            return mouth_x, y1 + (y2 - y1) * 0.70
+        if position == "left":
+            return x1, mouth_y
+        if position == "right":
+            return x2, mouth_y
+        return mouth_x, mouth_y
+
+    def _quadratic_curve(self, start, control, end, steps: int = 24):
+        points = []
+        for index in range(steps + 1):
+            t = index / steps
+            inv = 1.0 - t
+            x = inv * inv * start[0] + 2 * inv * t * control[0] + t * t * end[0]
+            y = inv * inv * start[1] + 2 * inv * t * control[1] + t * t * end[1]
+            points.append((int(round(x)), int(round(y))))
+        return np.array(points, dtype=np.int32)
 
     # ------------------------------------------------------------------ 掃描
     def scan_video(self, max_frames=None):
@@ -342,7 +475,10 @@ class VideoRenderer:
     def _assign_default_speakers(self, max_people: int):
         speakers = self.data_processor.get_unique_speakers()
         self.yolo_id_to_speaker = {
-            idx + 1: speakers[idx] if idx < len(speakers) else f"人物 {idx + 1}"
+            idx + 1: self.yolo_id_to_speaker.get(
+                idx + 1,
+                speakers[idx] if idx < len(speakers) else f"人物 {idx + 1}",
+            )
             for idx in range(max_people)
         }
 
@@ -398,7 +534,10 @@ class VideoRenderer:
 
         speakers = self.data_processor.get_unique_speakers()
         self.yolo_id_to_speaker = {
-            idx + 1: speakers[idx] if idx < len(speakers) else f"人物 {idx + 1}"
+            idx + 1: self.yolo_id_to_speaker.get(
+                idx + 1,
+                speakers[idx] if idx < len(speakers) else f"人物 {idx + 1}",
+            )
             for idx in range(max_people)
         }
         self.last_positions.clear()
@@ -411,6 +550,37 @@ class VideoRenderer:
         if not self.data_processor.has_data():
             return speaker  # 無腳本時顯示人物名稱，讓使用者確認追蹤結果
         return self.data_processor.get_dialogue(frame_idx, self.fps, self.total_frames, track_id, speaker)
+
+    def _track_id_for_speaker(self, speaker: str) -> int:
+        speaker = str(speaker or "").strip()
+        for track_id, mapped_speaker in self.yolo_id_to_speaker.items():
+            if str(mapped_speaker).strip() == speaker:
+                return int(track_id)
+        return 1
+
+    def _pre_scan_dummy_box(self, frame_width: int, frame_height: int, track_id: int) -> dict:
+        position = self.get_person_bubble_style(track_id).get("position", "auto")
+        if position == "auto":
+            position = self.default_bubble_position(track_id)
+        if position == "bottom":
+            cx, cy = frame_width * 0.5, frame_height * 0.18
+        elif position == "left":
+            cx, cy = frame_width * 0.76, frame_height * 0.50
+        elif position == "right":
+            cx, cy = frame_width * 0.24, frame_height * 0.50
+        else:
+            cx, cy = frame_width * 0.5, frame_height * 0.78
+        half_w = min(frame_width * 0.10, 120)
+        half_h = min(frame_height * 0.05, 60)
+        return {
+            "id": int(track_id),
+            "bbox": (
+                int(max(0, cx - half_w)),
+                int(max(0, cy - half_h)),
+                int(min(frame_width - 1, cx + half_w)),
+                int(min(frame_height - 1, cy + half_h)),
+            ),
+        }
 
     def set_cut_ranges(self, ranges):
         self.cut_ranges = normalize_time_ranges(ranges)
@@ -447,14 +617,13 @@ class VideoRenderer:
                 self.draw_speech_bubble(frame, text, box_data["id"], boxes)
         elif not self.tracking_data and self.data_processor.has_data():
             # 尚未掃描：在畫面下方以字幕方式預覽對話文字
-            _, text = self.data_processor.find_dialogue_at_time(frame_idx, self.fps)
+            row_idx, text = self.data_processor.find_dialogue_at_time(frame_idx, self.fps)
             if text:
                 fh, fw = frame.shape[:2]
-                cx = fw // 2
-                half = min(fw // 3, 220)
-                # 把假框放在畫面底部，讓泡泡自動顯示在框的上方（字幕位置）
-                dummy_box = {"id": 0, "bbox": (cx - half, fh - 2, cx + half, fh - 1)}
-                self.draw_speech_bubble(frame, text, 0, [dummy_box])
+                speaker, _ = self.data_processor.get_dialogue_row_values(row_idx)
+                track_id = self._track_id_for_speaker(speaker)
+                dummy_box = self._pre_scan_dummy_box(fw, fh, track_id)
+                self.draw_speech_bubble(frame, text, track_id, [dummy_box], draw_connector=False)
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return self._resize_preview(rgb)

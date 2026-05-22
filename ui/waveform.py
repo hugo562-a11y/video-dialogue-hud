@@ -217,6 +217,7 @@ class WaveformMixin:
             speaker = "" if speaker_col is None or pd.isna(row[speaker_col]) else str(row[speaker_col]).strip()
             if speaker == SILENCE_SPEAKER:
                 continue
+            is_deleted = dp.is_deleted(row_idx)
             start, end = parse_time_range(row[time_col])
             if start is None or end is None or end <= start:
                 continue
@@ -233,16 +234,16 @@ class WaveformMixin:
             draw_x = min(visible_x2 - 1, visible_x + 1)
             draw_x2 = max(draw_x + 1, visible_x2 - 1)
             is_selected = row_idx == self.selected_dialogue_row
-            palette = ["#243B53", "#3A2F57", "#284A3A", "#4A3A24", "#443044", "#24484A"]
-            fill = "#6B4E16" if is_selected else palette[int(row_idx) % len(palette)]
-            outline = "#FBBF24" if is_selected else "#53627A"
+            speaker_bg, speaker_accent = self.speaker_palette(speaker, row_idx) if hasattr(self, "speaker_palette") else ("#243B53", "#38BDF8")
+            fill = "#6B2630" if is_deleted else ("#6B4E16" if is_selected else speaker_bg)
+            outline = "#F87171" if is_deleted else ("#FBBF24" if is_selected else speaker_accent)
             width_px = 2 if is_selected else 1
             canvas.create_rectangle(draw_x, 18, draw_x2, height, fill=fill, stipple="gray25", outline="")
             canvas.create_rectangle(draw_x, 18, draw_x2, height, outline=outline, width=width_px)
             if 0 <= x <= width:
-                canvas.create_rectangle(max(0, x - 4), 18, min(width, x + 4), height, fill="#A78BFA", outline="")
+                canvas.create_rectangle(max(0, x - 4), 18, min(width, x + 4), height, fill="#22C55E", outline="")
             if 0 <= x2 <= width:
-                canvas.create_rectangle(max(0, x2 - 4), 18, min(width, x2 + 4), height, fill="#6D5DD3", outline="")
+                canvas.create_rectangle(max(0, x2 - 4), 18, min(width, x2 + 4), height, fill="#EF4444", outline="")
             self.waveform_dialogue_handles.append({
                 "row_idx": row_idx, "start": start, "end": end, "x1": x, "x2": x2,
             })
@@ -250,8 +251,8 @@ class WaveformMixin:
             if label_x - last_x < 28:
                 continue
             last_x = label_x
-            label = text[:3]
-            label_color = "#FFF3B0" if is_selected else "#D6CCFF"
+            label = "剪" if is_deleted else text[:3]
+            label_color = "#FCA5A5" if is_deleted else ("#FFF3B0" if is_selected else speaker_accent)
             canvas.create_text(
                 label_x + 3, 4, anchor="nw", text=label, fill=label_color,
                 font=("Microsoft JhengHei UI", 9, "bold" if is_selected else "normal"),
@@ -525,6 +526,23 @@ class WaveformMixin:
         except Exception:
             current = 1
         self.seek_to_frame(current + int(delta), play_sound=True)
+        return "break"
+
+    def seek_home(self, event=None):
+        widget = getattr(event, "widget", None)
+        widget_class = widget.winfo_class() if widget is not None else ""
+        if widget_class in {"Entry", "Text"}:
+            return
+        self.seek_to_frame(1, play_sound=False)
+        return "break"
+
+    def seek_end(self, event=None):
+        widget = getattr(event, "widget", None)
+        widget_class = widget.winfo_class() if widget is not None else ""
+        if widget_class in {"Entry", "Text"}:
+            return
+        total = max(1, int(self.renderer.total_frames or 1))
+        self.seek_to_frame(total, play_sound=False)
         return "break"
 
     def dialogue_indices(self):

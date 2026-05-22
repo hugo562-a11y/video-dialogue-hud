@@ -33,6 +33,7 @@ class PreviewMixin:
         self.preview_canvas.delete("all")
         self.preview_canvas.create_image(cx, cy, anchor="center", image=self._canvas_tk_img)
         self._draw_person_rois_on_canvas()
+        self._draw_preview_boxes_on_canvas()
         self.preview_canvas.create_text(
             cw - 8, ch - 8, anchor="se",
             text=f"{int(self.preview_zoom * 100)}%",
@@ -43,12 +44,38 @@ class PreviewMixin:
         for idx, roi in enumerate(self.renderer.person_rois, start=1):
             x1, y1 = self._video_to_canvas(roi[0], roi[1])
             x2, y2 = self._video_to_canvas(roi[2], roi[3])
-            self.preview_canvas.create_rectangle(x1, y1, x2, y2, outline="#43E2A8", width=3)
-            self.preview_canvas.create_text(
-                x1 + 8, y1 + 8, anchor="nw",
-                text=f"人物 {idx}", fill="#43E2A8",
-                font=("Microsoft JhengHei UI", 12, "bold"),
+            self._draw_person_marker(idx, (x1, y1, x2, y2), f"人物 {idx}")
+
+    def _draw_preview_boxes_on_canvas(self):
+        speakers = set(self.renderer.data_processor.get_unique_speakers()) if self.renderer.data_processor.has_data() else None
+        for box in self.preview_boxes:
+            tid = int(box["id"])
+            label = self.renderer.yolo_id_to_speaker.get(tid, f"人物 {tid}")
+            # 如果腳本中不包含該說話者，就不要在畫面上繪製其人物框
+            if speakers is not None and label not in speakers:
+                continue
+            x1, y1 = self._video_to_canvas(box["bbox"][0], box["bbox"][1])
+            x2, y2 = self._video_to_canvas(box["bbox"][2], box["bbox"][3])
+            self._draw_person_marker(tid, (x1, y1, x2, y2), label)
+
+    def _draw_person_marker(self, tid: int, rect, label: str):
+        x1, y1, x2, y2 = rect
+        color = self.renderer.bubble_color_hex(tid)
+        text_color = self.renderer.bubble_text_hex(tid)
+        self.preview_canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=3)
+        text_id = self.preview_canvas.create_text(
+            x1 + 8, y1 + 8, anchor="nw",
+            text=label, fill=text_color,
+            font=("Microsoft JhengHei UI", 12, "bold"),
+        )
+        bbox = self.preview_canvas.bbox(text_id)
+        if bbox:
+            pad = 4
+            bg_id = self.preview_canvas.create_rectangle(
+                bbox[0] - pad, bbox[1] - 2, bbox[2] + pad, bbox[3] + 2,
+                fill=color, outline=color,
             )
+            self.preview_canvas.tag_lower(bg_id, text_id)
 
     # ------------------------------------------------------------------ 座標轉換
     def _video_to_canvas(self, x: float, y: float) -> tuple[float, float]:
@@ -161,7 +188,7 @@ class PreviewMixin:
                     self.btn_clear_people.configure(state="normal")
                     self.log(f"已加入人物框 {len(self.renderer.person_rois)}。框完請按確認框選。")
             self._canvas_mode = "pan"
-            self.btn_draw_people.configure(text="2  框選要追蹤的人")
+            self.btn_draw_people.configure(text="2  框選追踪")
             self._refresh_canvas()
         elif self._canvas_mode == "bubble":
             self._bubble_drag_tid = None

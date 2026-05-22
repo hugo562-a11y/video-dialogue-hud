@@ -7,7 +7,6 @@ from core.constants import APP_TITLE
 from core.utils import (
     format_timecode,
     frame_to_seconds,
-    normalize_time_ranges,
     parse_time_range,
 )
 
@@ -89,39 +88,19 @@ class EditingMixin:
         row_idx = self.selected_dialogue_row
         if row_idx is None or not dp.has_data() or row_idx not in dp.df.index:
             return "break"
-        self.push_undo_state("刪除句")
-        if dp.delete_dialogue_row(row_idx):
-            indices = self.dialogue_indices()
-            self.selected_dialogue_row = indices[min(len(indices) - 1, max(0, row_idx))] if indices else None
+        deleted = not dp.is_deleted(row_idx)
+        self.push_undo_state("刪除句" if deleted else "還原句")
+        if dp.set_deleted(row_idx, deleted):
             self.renderer.bubble_cache.clear()
-            self.refresh_script_panel()
+            update_row = getattr(self, "update_script_row_deleted_state", None)
+            if not update_row or not update_row(row_idx):
+                self.refresh_script_panel()
+            if hasattr(self, "draw_waveform") and hasattr(self, "current_frame"):
+                self.draw_waveform(self.current_frame())
+            if hasattr(self, "refresh_script_action_buttons"):
+                self.refresh_script_action_buttons()
             self.refresh_current_preview()
-        return "break"
-
-    def cut_selected_dialogue_range(self, event=None):
-        widget = getattr(event, "widget", None)
-        widget_class = widget.winfo_class() if widget is not None else ""
-        if widget_class in {"Entry", "Text"}:
-            return "break"
-        dp = self.renderer.data_processor
-        row_idx = self.selected_dialogue_row
-        if row_idx is None or not dp.has_data() or row_idx not in dp.df.index:
-            messagebox.showinfo(APP_TITLE, "請先選取要剪掉的句子。")
-            return "break"
-        time_col, _, _ = dp.get_columns()
-        start, end = parse_time_range(dp.df.at[row_idx, time_col]) if time_col is not None else (None, None)
-        if start is None or end is None or end <= start:
-            messagebox.showinfo(APP_TITLE, "這句的時間格式無法剪片。")
-            return "break"
-        self.push_undo_state("剪去片段")
-        self.renderer.set_cut_ranges(normalize_time_ranges(self.renderer.cut_ranges + [(start, end)]))
-        if dp.delete_dialogue_row(row_idx):
-            indices = self.dialogue_indices()
-            self.selected_dialogue_row = indices[min(len(indices) - 1, max(0, row_idx))] if indices else None
-            self.renderer.bubble_cache.clear()
-            self.refresh_script_panel()
-            self.refresh_current_preview()
-            self.log(f"已標記剪去 {format_timecode(start)} - {format_timecode(end)}。匯出時會移除該片段。")
+            self.log("已標記刪除，匯出時會剪去該片段。" if deleted else "已還原這一句。")
         return "break"
 
     def merge_selected_dialogue(self):

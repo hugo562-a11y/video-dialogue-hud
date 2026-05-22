@@ -23,3 +23,5 @@ venv/
 *.xls
 *.otf
 *.pt
+*.log
+crash_log.txt

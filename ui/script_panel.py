@@ -17,6 +17,23 @@ from core.utils import parse_time_range, seconds_to_frame
 
 
 class ScriptPanelMixin:
+    SPEAKER_PALETTE = [
+        ("#173B45", "#38BDF8"),
+        ("#3B2A50", "#A78BFA"),
+        ("#23462F", "#4ADE80"),
+        ("#4A341C", "#F59E0B"),
+        ("#4A2638", "#F472B6"),
+        ("#1F3F3A", "#2DD4BF"),
+        ("#3E2D22", "#FB7185"),
+        ("#29364D", "#60A5FA"),
+    ]
+
+    def speaker_palette(self, speaker: str, fallback_idx: int = 0) -> tuple[str, str]:
+        speaker = str(speaker or "").strip()
+        if speaker == SILENCE_SPEAKER:
+            return "#252A34", "#64748B"
+        key = sum(ord(ch) for ch in speaker) if speaker else int(fallback_idx)
+        return self.SPEAKER_PALETTE[key % len(self.SPEAKER_PALETTE)]
 
     # ------------------------------------------------------------------ 建構
     def refresh_script_panel(self):
@@ -26,6 +43,7 @@ class ScriptPanelMixin:
             child.destroy()
         self.script_row_widgets = {}
         dp = self.renderer.data_processor
+        self.refresh_script_action_buttons()
         if hasattr(self, "btn_save_data"):
             self.btn_save_data.configure(state="normal" if dp.has_data() else "disabled")
         if not dp.has_data():
@@ -46,23 +64,49 @@ class ScriptPanelMixin:
             time_text = "" if pd.isna(row[time_col])  else str(row[time_col]).strip()
             is_selected = row_idx == self.selected_dialogue_row
             is_silence  = speaker == SILENCE_SPEAKER
+            is_deleted = dp.is_deleted(row_idx)
 
-            bg = "#28364A" if is_selected else ("#252A34" if is_silence else "#1B2230")
+            speaker_bg, speaker_accent = self.speaker_palette(speaker, row_idx)
+            bg = "#4A2630" if is_deleted else ("#28364A" if is_selected else ("#252A34" if is_silence else speaker_bg))
             line = ctk.CTkFrame(
                 self.script_scroll, fg_color=bg,
-                border_width=1 if is_selected else 0, border_color="#FBBF24",
+                border_width=1 if is_selected else 0, border_color="#FBBF24" if is_selected else speaker_accent,
             )
             line.pack(fill="x", padx=4, pady=(1 if is_silence else 3))
             line.grid_columnconfigure(1, weight=1)
+            strike_font = ctk.CTkFont(family="Microsoft JhengHei UI", size=12, overstrike=True)
+            small_strike_font = ctk.CTkFont(family="Microsoft JhengHei UI", size=11, overstrike=True)
+            text_color = "#8A93A6" if is_deleted else None
 
             # 時間按鈕（點擊跳轉）
             time_btn = ctk.CTkButton(
                 line, text=time_text or "--:--",
                 width=98, height=26 if is_silence else 28,
-                fg_color="#334155", hover_color="#475569",
+                fg_color="#5B2B34" if is_deleted else "#334155",
+                hover_color="#73323E" if is_deleted else "#475569",
                 command=lambda idx=row_idx: self.select_dialogue_row(idx, seek=True),
             )
             time_btn.grid(row=0, column=0, padx=(6, 4), pady=(4 if is_silence else 6, 2 if is_silence else 2), sticky="w")
+
+            if is_deleted:
+                ctk.CTkLabel(
+                    line, text=speaker or "未命名",
+                    text_color=text_color, anchor="w",
+                    font=small_strike_font,
+                ).grid(row=0, column=1, padx=4, pady=(6, 2), sticky="ew")
+                ctk.CTkButton(
+                    line, text="還", width=28, height=28,
+                    fg_color="#2E5B8B", hover_color="#3572A5",
+                    command=lambda idx=row_idx: self.restore_dialogue_from_panel(idx),
+                ).grid(row=0, column=2, padx=(4, 6), pady=(6, 2), sticky="e")
+                ctk.CTkLabel(
+                    line, text=text or "（空白）",
+                    text_color=text_color, anchor="w",
+                    font=strike_font,
+                ).grid(row=1, column=0, columnspan=3, sticky="ew", padx=6, pady=(2, 6))
+                line.bind("<Button-1>", lambda _e, idx=row_idx: self.select_dialogue_row(idx, seek=True))
+                self.script_row_widgets[row_idx] = {"frame": line, "text": None, "speaker": None, "deleted_layout": True}
+                continue
 
             if is_silence:
                 # 壓縮顯示：靜默段不需要說話者 / 文字 entry
@@ -77,7 +121,7 @@ class ScriptPanelMixin:
                     command=lambda idx=row_idx: self.delete_dialogue_from_panel(idx),
                 ).grid(row=0, column=2, padx=(4, 6), pady=4, sticky="e")
                 line.bind("<Button-1>", lambda _e, idx=row_idx: self.select_dialogue_row(idx, seek=True))
-                self.script_row_widgets[row_idx] = {"frame": line, "text": None, "speaker": None}
+                self.script_row_widgets[row_idx] = {"frame": line, "text": None, "speaker": None, "deleted_layout": False}
                 continue
 
             # ---- 一般對話行 ----
@@ -91,6 +135,7 @@ class ScriptPanelMixin:
                 command=lambda value, idx=row_idx: self.change_script_row_speaker(idx, value),
             )
             speaker_combo.set(speaker)
+            speaker_combo.configure(border_color=speaker_accent, button_color=speaker_accent)
             speaker_combo.grid(row=0, column=1, padx=4, pady=(6, 2), sticky="ew")
             speaker_combo.bind(
                 "<FocusOut>",
@@ -108,23 +153,50 @@ class ScriptPanelMixin:
                           command=lambda idx=row_idx: self.play_dialogue_row(idx)).pack(side="left", padx=1)
             ctk.CTkButton(ops, text="合", width=28, height=28,
                           command=lambda idx=row_idx: self.merge_dialogue_from_panel(idx)).pack(side="left", padx=1)
-            ctk.CTkButton(ops, text="刪", width=28, height=28, fg_color="#8A3A3A", hover_color="#A64848",
-                          command=lambda idx=row_idx: self.delete_dialogue_from_panel(idx)).pack(side="left", padx=1)
-            ctk.CTkButton(ops, text="剪", width=28, height=28, fg_color="#7C3AED", hover_color="#8B5CF6",
-                          command=lambda idx=row_idx: self.cut_dialogue_from_panel(idx)).pack(side="left", padx=1)
+            delete_btn = ctk.CTkButton(ops, text="刪", width=28, height=28, fg_color="#8A3A3A", hover_color="#A64848",
+                                       command=lambda idx=row_idx: self.delete_dialogue_from_panel(idx))
+            delete_btn.pack(side="left", padx=1)
 
             # 文字輸入
-            text_entry = ctk.CTkEntry(line)
+            text_entry = ctk.CTkEntry(line, border_color=speaker_accent)
             text_entry.insert(0, text)
             text_entry.grid(row=1, column=0, columnspan=3, sticky="ew", padx=6, pady=(2, 6))
             text_entry.bind("<FocusIn>",  lambda _e, idx=row_idx: self.select_dialogue_row(idx, seek=False))
             text_entry.bind("<KeyRelease>", lambda _e, idx=row_idx, entry=text_entry: self.update_script_row_text(idx, entry.get()))
             line.bind("<Button-1>", lambda _e, idx=row_idx: self.select_dialogue_row(idx, seek=True))
 
-            self.script_row_widgets[row_idx] = {"frame": line, "text": text_entry, "speaker": speaker_var}
+            self.script_row_widgets[row_idx] = {
+                "frame": line,
+                "text": text_entry,
+                "speaker": speaker_var,
+                "delete_button": delete_btn,
+                "deleted_layout": False,
+                "normal_font": text_entry.cget("font"),
+                "normal_text_color": text_entry.cget("text_color"),
+            }
 
         self._script_row_loading = False
         self.update_script_selection_styles()
+        self.refresh_script_action_buttons()
+
+    def refresh_script_action_buttons(self):
+        dp = self.renderer.data_processor
+        has_data = dp.has_data()
+        has_video = bool(getattr(self.renderer, "video_path", None))
+        selected = self.selected_dialogue_row
+        has_selected = has_data and selected is not None and selected in dp.df.index
+        selected_deleted = has_selected and dp.is_deleted(selected)
+        button_states = {
+            "btn_add_sentence": "normal" if has_video else "disabled",
+            "btn_split": "normal" if has_selected and not selected_deleted else "disabled",
+            "btn_merge": "normal" if has_selected and not selected_deleted else "disabled",
+            "btn_delete_dialogue": "normal" if has_selected and not selected_deleted else "disabled",
+            "btn_restore_delete": "normal" if selected_deleted else "disabled",
+        }
+        for name, state in button_states.items():
+            button = getattr(self, name, None)
+            if button is not None:
+                button.configure(state=state)
 
     # ------------------------------------------------------------------ 選取樣式
     def update_script_selection_styles(self):
@@ -142,11 +214,53 @@ class ScriptPanelMixin:
                 value = dp.df.at[row_idx, speaker_col]
                 speaker = "" if pd.isna(value) else str(value).strip()
             is_silence = speaker == SILENCE_SPEAKER
-            bg = "#28364A" if is_selected else ("#252A34" if is_silence else "#1B2230")
+            is_deleted = dp.is_deleted(row_idx)
+            speaker_bg, speaker_accent = self.speaker_palette(speaker, row_idx)
+            bg = "#4A2630" if is_deleted else ("#28364A" if is_selected else ("#252A34" if is_silence else speaker_bg))
             try:
-                frame.configure(fg_color=bg, border_width=1 if is_selected else 0, border_color="#FBBF24")
+                frame.configure(fg_color=bg, border_width=1 if is_selected else 0, border_color="#FBBF24" if is_selected else speaker_accent)
             except Exception:
                 frame.configure(fg_color=bg)
+
+    def update_script_row_deleted_state(self, row_idx) -> bool:
+        widgets = getattr(self, "script_row_widgets", {}).get(row_idx)
+        if not widgets:
+            return False
+        dp = self.renderer.data_processor
+        frame = widgets.get("frame")
+        if frame is None or not frame.winfo_exists():
+            return False
+        is_deleted = dp.is_deleted(row_idx)
+        if not is_deleted and widgets.get("deleted_layout"):
+            return False
+        is_selected = row_idx == self.selected_dialogue_row
+        speaker = ""
+        _, speaker_col, _ = dp.get_columns() if dp.has_data() else (None, None, None)
+        if speaker_col is not None and row_idx in dp.df.index:
+            value = dp.df.at[row_idx, speaker_col]
+            speaker = "" if pd.isna(value) else str(value).strip()
+        speaker_bg, _speaker_accent = self.speaker_palette(speaker, row_idx)
+        bg = "#4A2630" if is_deleted else ("#28364A" if is_selected else speaker_bg)
+        try:
+            frame.configure(fg_color=bg, border_width=1 if is_selected else 0, border_color="#FBBF24")
+        except Exception:
+            frame.configure(fg_color=bg)
+        text_entry = widgets.get("text")
+        if text_entry is not None and text_entry.winfo_exists():
+            if is_deleted:
+                text_entry.configure(
+                    font=ctk.CTkFont(family="Microsoft JhengHei UI", size=12, overstrike=True),
+                    text_color="#8A93A6",
+                )
+            else:
+                text_entry.configure(font=widgets.get("normal_font"), text_color=widgets.get("normal_text_color"))
+        delete_btn = widgets.get("delete_button")
+        if delete_btn is not None and delete_btn.winfo_exists():
+            if is_deleted:
+                delete_btn.configure(text="還", fg_color="#2E5B8B", hover_color="#3572A5")
+            else:
+                delete_btn.configure(text="刪", fg_color="#8A3A3A", hover_color="#A64848")
+        return True
 
     # ------------------------------------------------------------------ 自動捲動
     def _scroll_to_selected_row(self):
@@ -237,6 +351,7 @@ class ScriptPanelMixin:
         self.entry_text.insert(0, text)
         self._loading_person_fields = False
         self.update_current_sentence_label()
+        self.refresh_script_action_buttons()
         if seek and start is not None and self.renderer.total_frames:
             # +0.05s 避免浮點取整落在對話起始幀前一格
             frame = seconds_to_frame(start + 0.05, self.renderer.fps, self.renderer.total_frames)
@@ -316,9 +431,9 @@ class ScriptPanelMixin:
         self.selected_dialogue_row = row_idx
         self.delete_selected_dialogue()
 
-    def cut_dialogue_from_panel(self, row_idx):
+    def restore_dialogue_from_panel(self, row_idx):
         self.selected_dialogue_row = row_idx
-        self.cut_selected_dialogue_range()
+        self.delete_selected_dialogue()
 
     def merge_dialogue_from_panel(self, row_idx):
         self.selected_dialogue_row = row_idx
@@ -327,6 +442,20 @@ class ScriptPanelMixin:
     def play_dialogue_row(self, row_idx):
         self.select_dialogue_row(row_idx, seek=True)
         self.play_current_sentence()
+
+    def delete_selected_from_toolbar(self):
+        dp = self.renderer.data_processor
+        row_idx = self.selected_dialogue_row
+        if row_idx is None or not dp.has_data() or row_idx not in dp.df.index or dp.is_deleted(row_idx):
+            return "break"
+        return self.delete_selected_dialogue()
+
+    def restore_selected_from_toolbar(self):
+        dp = self.renderer.data_processor
+        row_idx = self.selected_dialogue_row
+        if row_idx is None or not dp.has_data() or row_idx not in dp.df.index or not dp.is_deleted(row_idx):
+            return "break"
+        return self.delete_selected_dialogue()
 
     # ------------------------------------------------------------------ 說話者選項
     def get_person_speaker_options(self) -> list[str]:
