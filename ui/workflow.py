@@ -1127,7 +1127,6 @@ class WorkflowMixin:
             return 1
         try:
             from resemblyzer import VoiceEncoder, preprocess_wav
-            from sklearn.cluster import AgglomerativeClustering
 
             if not getattr(self, "_voice_encoder", None):
                 self._voice_encoder = VoiceEncoder()
@@ -1154,32 +1153,33 @@ class WorkflowMixin:
             norms = np.where(norms == 0, 1.0, norms)
             emb_array = emb_array / norms
 
-            # 自動找閾值：固定值對人少時太鬆（2人→3群）、人多時太緊（6人→1群）。
-            # 做法：取所有成對餘弦距離，找最大跳躍點（同人距離 vs 不同人距離之間的缺口），
-            # 把閾值設在缺口中間，自動適應不同人數場景。
-            from sklearn.metrics.pairwise import cosine_distances
-            dist_mat = cosine_distances(emb_array)
-            pairs = np.triu_indices(len(emb_array), k=1)
-            all_dists = np.sort(dist_mat[pairs])
+            # 用樹狀圖（dendrogram）的合併距離序列找切割點。
+            # 多人場景中「所有成對距離」以跨人距離為主，直接找缺口會找錯。
+            # 樹狀圖的合併距離先小（同人片段合併）再大（跨人合併），
+            # 最大跳躍就是「同人 → 不同人」的邊界，在缺口中間切最準確。
+            from scipy.cluster.hierarchy import linkage as sp_linkage, fcluster
+            from scipy.spatial.distance import pdist
 
-            if len(all_dists) >= 4:
-                gaps = np.diff(all_dists)
+            dists = pdist(emb_array, metric="cosine")
+            Z = sp_linkage(dists, method="average")
+            merge_dists = Z[:, 2]
+
+            if len(merge_dists) >= 2:
+                gaps = np.diff(merge_dists)
                 gap_pos = int(np.argmax(gaps))
-                threshold = float(np.clip(
-                    (all_dists[gap_pos] + all_dists[gap_pos + 1]) / 2,
-                    0.22, 0.52,
-                ))
+                max_gap = float(gaps[gap_pos])
+                if max_gap >= 0.10:
+                    cut = float(np.clip(
+                        (merge_dists[gap_pos] + merge_dists[gap_pos + 1]) / 2,
+                        0.15, 0.55,
+                    ))
+                    labels = fcluster(Z, cut, criterion="distance")
+                    n_clusters = int(labels.max())
+                else:
+                    n_clusters = 1
             else:
-                threshold = 0.35
+                n_clusters = 1
 
-            clustering = AgglomerativeClustering(
-                n_clusters=None,
-                distance_threshold=threshold,
-                metric="cosine",
-                linkage="average",
-            )
-            labels = clustering.fit_predict(emb_array)
-            n_clusters = len(set(labels))
             return max(1, min(n_clusters, max_speakers))
         except Exception as exc:
             self.ui_queue.put({"type": "error_log", "text": f"聲紋估算失敗，先使用 1 個人物：{exc}"})
