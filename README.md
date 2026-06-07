@@ -7,83 +7,15 @@
 Automatically track speakers in a video, overlay dialogue as speech bubbles, and export the final cut.
 
 [![Platform](https://img.shields.io/badge/Windows-10%2F11%2064bit-0078D6?logo=windows)](https://www.microsoft.com/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-brightgreen)](LICENSE)
 [![Tests](https://github.com/hugo562-a11y/video-dialogue-hud/actions/workflows/tests.yml/badge.svg)](https://github.com/hugo562-a11y/video-dialogue-hud/actions/workflows/tests.yml)
 
 </div>
 
-<!-- TODO: 錄製示範 GIF 後取消注釋
+<!-- TODO: 錄製示範 GIF 後取消注釋 / Uncomment after recording a demo GIF
 ![Demo](docs/demo.gif)
 -->
-
----
-
-## 📥 下載與安裝 · Download & Install
-
-> **中文使用者** — 請看這裡。不需要安裝 Python，不需要任何程式知識。
->
-> **English users** — Start here. No Python installation required.
-
----
-
-### 步驟一 · Step 1 — 下載程式 · Download the app
-
-前往 **[Releases 頁面](https://github.com/hugo562-a11y/video-dialogue-hud/releases/latest)** 下載最新版：
-
-Go to the **[Releases page](https://github.com/hugo562-a11y/video-dialogue-hud/releases/latest)** and download:
-
-```
-VideoDialogueHUD_portable.zip
-```
-
----
-
-### 步驟二 · Step 2 — 下載 ffmpeg · Download ffmpeg
-
-本程式**不內建 ffmpeg**，需要您自行下載（免費、開源）。
-
-ffmpeg is **not bundled** with the app. You need to download it separately (free & open source).
-
-1. 前往 · Go to: **https://www.gyan.dev/ffmpeg/builds/**
-2. 下載 · Download: **`ffmpeg-release-essentials.zip`**（頁面中間的下載連結）
-3. 解壓縮，找到 `bin` 資料夾裡的 **`ffmpeg.exe`**
-4. 把 **`ffmpeg.exe`** 複製到程式資料夾（和 `影片對話HUD工具.exe` 放在一起）
-
-   Extract the zip → open the `bin` folder → copy **`ffmpeg.exe`** into the app folder (same folder as `影片對話HUD工具.exe`).
-
-完成後的資料夾結構 · Folder structure after setup:
-
-```
-VideoDialogueHUD\
-├── 影片對話HUD工具.exe   ← 主程式 · Main app
-├── ffmpeg.exe            ← 自行下載放入 · You add this
-├── yolov8n.pt            ← AI 模型，已內建 · Bundled
-└── （其他支援檔案 · other support files）
-```
-
----
-
-### 步驟三 · Step 3 — 解壓縮並執行 · Extract and run
-
-1. 將 `VideoDialogueHUD_portable.zip` 解壓縮到任意位置
-
-   Extract `VideoDialogueHUD_portable.zip` anywhere you like.
-
-2. 把 `ffmpeg.exe` 放進解壓縮後的資料夾
-
-   Copy `ffmpeg.exe` into the extracted folder.
-
-3. 雙擊 `影片對話HUD工具.exe` 即可啟動
-
-   Double-click `影片對話HUD工具.exe` to launch.
-
-> ⚠️ **第一次啟動較慢 · First launch is slow**
-> 首次開啟需要約 10–30 秒載入 AI 模型，屬正常現象，請耐心等候。
-> The first launch takes 10–30 seconds to load the AI model — this is normal.
-
-> ⚠️ **Windows 安全警告 · Windows security warning**
-> 若出現「Windows 已保護您的電腦」，點「更多資訊」→「仍要執行」。
-> If you see "Windows protected your PC", click "More info" → "Run anyway".
 
 ---
 
@@ -91,13 +23,58 @@ VideoDialogueHUD\
 
 | 功能 · Feature | 說明 · Details |
 |---|---|
-| **人物追蹤 · Person tracking** | YOLOv8 Nano 自動偵測並追蹤多位說話者 |
-| **語音辨識 · Auto-transcription** | Faster-Whisper 從影片音軌自動產生對話腳本 |
-| **對話氣泡 · Speech bubbles** | 5 種樣式 × 6 種顏色 × 4 種位置，支援拖曳調整 |
-| **波形編輯器 · Waveform editor** | 視覺化音軌，可手動對齊時間軸 |
+| **人物追蹤 · Person tracking** | YOLOv8 Nano 自動偵測並追蹤多位說話者 · Auto-detects and tracks multiple speakers |
+| **語音辨識 · Auto-transcription** | Faster-Whisper 從音軌產生帶時間碼的對話腳本 · Generates time-coded script from audio |
+| **對話氣泡 · Speech bubbles** | 5 種樣式 × 6 種顏色 × 4 種位置，支援拖曳調整 · 5 styles × 6 colours × 4 positions |
+| **波形編輯器 · Waveform editor** | 視覺化音軌，可手動對齊時間軸 · Visual waveform with interactive time editing |
 | **對話編輯 · Dialogue editor** | 分割、合併、刪除、還原、批次改名，附 Undo / Redo |
-| **智慧匯出 · Smart export** | 自動剪除靜音段、ffmpeg 音訊合成、支援中文路徑 |
-| **腳本匯入 · Script import** | 支援 CSV / Excel（.xlsx / .xls）格式 |
+| **智慧匯出 · Smart export** | 自動剪除靜音段、ffmpeg 音訊合成 · Silence cutting, ffmpeg audio merge |
+| **腳本匯入 · Script import** | 支援 CSV / Excel（.xlsx / .xls）· Supports CSV and Excel |
+
+---
+
+## 🚀 安裝與執行 · Installation
+
+### 系統需求 · Requirements
+
+| 項目 | 說明 |
+|---|---|
+| 作業系統 · OS | Windows 10 / 11（64 位元 · 64-bit） |
+| Python | 3.10 或以上 · 3.10 or newer → [python.org](https://www.python.org/downloads/) |
+| ffmpeg | 需加入系統 PATH · Must be on system PATH → [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/) 下載 `ffmpeg-release-essentials.zip` |
+| 顯示卡 · GPU | 非必要，但 NVIDIA GPU 可大幅加速掃描與辨識 · Optional, but NVIDIA GPU speeds up scanning significantly |
+
+### 安裝步驟 · Steps
+
+**1. 複製專案 · Clone**
+
+```bash
+git clone https://github.com/hugo562-a11y/video-dialogue-hud.git
+cd video-dialogue-hud
+```
+
+**2. 建立虛擬環境 · Create virtual environment**
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+**3. 安裝套件 · Install dependencies**
+
+```bash
+pip install -r requirements.txt
+```
+
+> **GPU 使用者 · GPU users：** 請先至 [pytorch.org/get-started](https://pytorch.org/get-started/locally/) 安裝對應 CUDA 版本的 PyTorch，再執行上方指令。
+>
+> Install a CUDA-enabled PyTorch build **before** running the above command.
+
+**4. 啟動程式 · Launch**
+
+```bash
+python main.py
+```
 
 ---
 
@@ -106,62 +83,77 @@ VideoDialogueHUD\
 ### 操作流程 · Workflow
 
 ```
-中文                              English
-──────────────────────────────────────────────────────────
-1. 選取影片                       Select video (MP4/AVI/MOV/MKV)
-2. 取得腳本                       Load script — transcribe or import CSV/Excel
-3. 確認說話者人數                  Set number of speakers
-4. 掃描人物（需幾分鐘）            Scan — YOLO tracks each person (takes a few minutes)
-5. 對應說話者名稱                  Map speaker names to detected persons
-6. 調整氣泡樣式                   Customise bubble style, colour, position
-7. 匯出影片                       Export final video
+步驟 · Step    中文                    English
+─────────────────────────────────────────────────────────
+1              選取影片                Select video  (MP4 / AVI / MOV / MKV)
+2              取得腳本                Load script — transcribe or import CSV / Excel
+3              確認說話者人數           Set number of speakers
+4              掃描人物（需幾分鐘）     Scan — YOLO tracks each person frame-by-frame
+5              對應說話者名稱           Map speaker names to detected persons
+6              調整氣泡樣式             Customise bubble style, colour, position
+7              匯出影片                Export final video
 ```
 
 ### 對話腳本格式 · Dialogue Script Format
 
-手動載入 CSV / Excel 腳本時，欄位如下：
+手動載入 CSV / Excel 腳本時，表格需包含以下欄位：
 
-When importing a CSV or Excel script manually, use these columns:
+When importing manually, the file should contain these columns:
 
 | 欄位 · Column | 格式 · Format | 範例 · Example |
 |---|---|---|
-| `start` | `HH:MM:SS`、`MM:SS` 或秒數 / or seconds | `00:01:23` |
+| `start` | `HH:MM:SS`、`MM:SS` 或秒數 · or seconds | `00:01:23` |
 | `end` | 同上 · same | `00:01:27` |
 | `speaker` | 說話者名稱 · Speaker name | `小明 / Alice` |
-| `text` | 對話內容 · Dialogue | `你好！/ Hello!` |
+| `text` | 對話內容 · Dialogue line | `你好！/ Hello!` |
 
 也支援單欄 `time` 格式：`"00:01:23 - 00:01:27"`
-
-Single-column `time` format is also supported: `"00:01:23 - 00:01:27"`
+Single-column `time` format is also supported.
 
 ---
 
-## 🔧 Developer Setup
+## 🔧 進階 · Advanced
 
-> For contributors who want to run from source.
-
-```bash
-git clone https://github.com/hugo562-a11y/video-dialogue-hud.git
-cd video-dialogue-hud
-
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
-```
-
-**GPU support:** Install a CUDA-enabled PyTorch build first → [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
-
-### Build portable EXE
+### 建置獨立 EXE · Build standalone EXE
 
 ```bash
-build_portable.bat   # auto-downloads assets and creates VideoDialogueHUD_portable.zip
+# 自動下載所有必要資源並以 PyInstaller 打包
+# Auto-downloads required assets and builds with PyInstaller
+build_portable.bat
 ```
 
-### Run tests
+輸出位於 `dist\影片對話HUD工具\`。
+Output is in `dist\影片對話HUD工具\`. Copy `ffmpeg.exe` into that folder before distributing.
+
+### 執行測試 · Run tests
 
 ```bash
 python -m pytest tests/ -v
+```
+
+### 專案結構 · Project structure
+
+```
+video-dialogue-hud/
+├── main.py                 # 程式入口 · Entry point
+├── requirements.txt
+├── main.spec               # PyInstaller 打包設定 · Build spec
+├── build_portable.bat      # 一鍵建置腳本 · One-click build script
+├── core/
+│   ├── constants.py        # 全域常數與路徑 · Global constants
+│   ├── data_processor.py   # 對話資料管理 · Dialogue data management
+│   ├── utils.py            # 時間解析等工具 · Time parsing utilities
+│   └── video_renderer.py   # YOLO 追蹤、氣泡渲染、匯出 · YOLO, bubbles, export
+├── ui/
+│   ├── app.py              # 主視窗 · Main window
+│   ├── controls.py         # 播放、Undo/Redo · Playback, undo/redo
+│   ├── editing.py          # 句子編輯 · Sentence editing
+│   ├── preview.py          # 預覽畫布 · Preview canvas
+│   ├── script_panel.py     # 對話腳本面板 · Script panel
+│   ├── waveform.py         # 音訊波形 · Audio waveform
+│   └── workflow.py         # 載入→掃描→匯出 · Load→scan→export
+└── tests/
+    └── test_core_logic.py
 ```
 
 ---
@@ -172,6 +164,6 @@ Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING
 
 ---
 
-## 📄 License · 授權
+## 📄 授權 · License
 
 [MIT](LICENSE) © 2026
