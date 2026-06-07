@@ -377,6 +377,14 @@ class VideoRenderer:
         self.ensure_model()
         safe_path = get_safe_path(self.video_path)
         cap = cv2.VideoCapture(safe_path)
+        if not cap.isOpened():
+            if self.ui_callback:
+                self.ui_callback("error_log", f"掃描失敗：無法開啟影片 {safe_path}")
+            self.is_processing = False
+            if self.ui_callback:
+                self.ui_callback("scan_finished", 1.0)
+                self.ui_callback("progress", 1.0)
+            return
         self.fps = cap.get(cv2.CAP_PROP_FPS) or 30
         self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         self.video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or self.video_width)
@@ -385,9 +393,12 @@ class VideoRenderer:
         self.tracking_data = {}
         frame_count = 0
         limit = max_frames or self.total_frames
+        # 某些格式（MKV 等）OpenCV 讀不到 frame count，total_frames=0 → limit=0 → 迴圈不跑
+        # 改成讀到 EOF 為止
+        read_to_eof = (limit == 0)
         last_person_boxes: dict = {}
         try:
-            while cap.isOpened() and self.is_processing and frame_count < limit:
+            while cap.isOpened() and self.is_processing and (read_to_eof or frame_count < limit):
                 ret, frame = cap.read()
                 if not ret:
                     break
