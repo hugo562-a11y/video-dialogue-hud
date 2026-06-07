@@ -400,8 +400,15 @@ class VideoRenderer:
                     if results and results[0].boxes is not None and results[0].boxes.id is not None:
                         boxes = results[0].boxes.xyxy.cpu().numpy()
                         track_ids = results[0].boxes.id.cpu().int().numpy()
-                        for box, track_id in zip(boxes, track_ids):
+                        confs = results[0].boxes.conf.cpu().numpy()
+                        frame_area = frame.shape[0] * frame.shape[1]
+                        min_box_area = frame_area * 0.008  # 忽略佔畫面不足 0.8% 的小框（遠景路人）
+                        for box, track_id, conf in zip(boxes, track_ids, confs):
+                            if conf < 0.45:  # 過濾低信心度偵測
+                                continue
                             x1, y1, x2, y2 = box
+                            if (x2 - x1) * (y2 - y1) < min_box_area:  # 過濾超小框
+                                continue
                             head_h = min(int((x2 - x1) * 1.05), int((y2 - y1) * 0.42), int(y2 - y1))
                             bbox = (int(x1), int(y1), int(x2), int(y1 + head_h))
                             tid = int(track_id)
@@ -501,7 +508,38 @@ class VideoRenderer:
                 item["count"] += 1
                 item["sum_x"] += (x1 + x2) / 2
                 item["sum_y"] += (y1 + y2) / 2
+
+        # 過濾出現幀數太少的 ID（短暫路人、誤偵測）
+        total_frames = max(len(self.tracking_data), 1)
+        min_frames = max(5, int(total_frames * 0.03))  # 至少出現 3% 的幀或 5 幀
+        stats = {tid: data for tid, data in stats.items() if data["count"] >= min_frames}
+
         if len(stats) <= max_people:
+            # 數量已符合，仍需重建 ID 映射使 ID 從 1 開始連續
+            centers_all = []
+            for tid, item in stats.items():
+                count = max(item["count"], 1)
+                centers_all.append({"id": tid, "count": count, "x": item["sum_x"] / count, "y": item["sum_y"] / count})
+            if not centers_all:
+                return
+            centers_all.sort(key=lambda c: c["x"])
+            id_map = {c["id"]: idx + 1 for idx, c in enumerate(centers_all)}
+            for frame_idx, boxes in list(self.tracking_data.items()):
+                self.tracking_data[frame_idx] = [
+                    {"id": id_map[int(b["id"])], "bbox": b["bbox"]}
+                    for b in boxes if int(b["id"]) in id_map
+                ]
+            speakers = self.data_processor.get_unique_speakers()
+            self.yolo_id_to_speaker = {
+                idx + 1: self.yolo_id_to_speaker.get(
+                    idx + 1,
+                    speakers[idx] if idx < len(speakers) else f"人物 {idx + 1}",
+                )
+                for idx in range(len(centers_all))
+            }
+            self.last_positions.clear()
+            self.bubble_offsets.clear()
+            self.bubble_cache.clear()
             return
 
         centers = []
@@ -509,13 +547,15 @@ class VideoRenderer:
             count = max(item["count"], 1)
             centers.append({"id": tid, "count": count, "x": item["sum_x"] / count, "y": item["sum_y"] / count})
 
+        # 種子選取：先按出現幀數排序取前 N，再按 X 排序確保左右對應
+        # Y 軸權重提高到 0.6，讓上下排列的人也能正確區分
         seeds = sorted(centers, key=lambda c: c["count"], reverse=True)[:max_people]
         seeds = sorted(seeds, key=lambda c: c["x"])
         id_map = {}
         for center in centers:
             best_index = min(
                 range(len(seeds)),
-                key=lambda i: abs(center["x"] - seeds[i]["x"]) + 0.35 * abs(center["y"] - seeds[i]["y"]),
+                key=lambda i: abs(center["x"] - seeds[i]["x"]) + 0.6 * abs(center["y"] - seeds[i]["y"]),
             )
             id_map[center["id"]] = best_index + 1
 
