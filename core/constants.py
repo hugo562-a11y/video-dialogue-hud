@@ -3,6 +3,7 @@ import os
 import random
 import shutil
 import string
+import sys
 import tempfile
 
 APP_TITLE = "影片對話 HUD 工具"
@@ -13,8 +14,12 @@ SILENCE_SPEAKER = "無講話"
 SILENCE_TEXT = "（無講話）"
 MIN_SILENCE_SECONDS = 0.45
 
-# 專案根目錄（core/ 的上一層）
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 凍結模式（PyInstaller EXE）下資產解壓在 sys._MEIPASS；
+# 開發模式下為 core/ 的上一層目錄。
+if getattr(sys, "frozen", False):
+    ROOT_DIR = sys._MEIPASS
+else:
+    ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _SAFE_PATH_MAP: dict = {}
 _CLEANUP_PATHS: list = []
