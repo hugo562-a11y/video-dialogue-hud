@@ -109,6 +109,11 @@ class ControlsMixin:
         if self.preview_playing:
             return
         self._play_edited = play_edited
+        if play_edited:
+            # 即時計算剪切範圍，不需等到匯出才有 cut_ranges
+            self.renderer.set_cut_ranges(
+                self.renderer.data_processor.get_export_cut_ranges(self.get_video_duration())
+            )
         self.preview_playing = True
         start_frame = int(float(self.slider_timeline.get()))
         self._preview_play_start_frame = start_frame
@@ -467,6 +472,14 @@ class ControlsMixin:
         if hasattr(self, "_scrub_after_id"):
             self.after_cancel(self._scrub_after_id)
         self._scrub_after_id = self.after(80, lambda: self._render_scrub(frame_idx))
+
+    def _toggle_person_boxes(self):
+        self._show_person_boxes = not getattr(self, "_show_person_boxes", True)
+        if hasattr(self, "btn_toggle_boxes"):
+            self.btn_toggle_boxes.configure(
+                text="顯示人物框" if not self._show_person_boxes else "隱藏人物框"
+            )
+        self._refresh_canvas()
 
     def _set_play_buttons_state(self, state: str):
         if hasattr(self, "btn_play_all"):

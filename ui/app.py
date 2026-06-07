@@ -67,6 +67,8 @@ class App(
         self._waveform_audio_path = None
         self._last_audio_preview_at = -1.0
 
+        self._show_person_boxes = True   # 顯示/隱藏人物框
+
         # 聲波
         self.waveform_samples = None
         self.waveform_duration = None
@@ -354,7 +356,14 @@ class App(
             command=lambda: self.start_preview_playback(play_edited=True),
             state="disabled",
         )
-        self.btn_play_edited.pack(side="left")
+        self.btn_play_edited.pack(side="left", padx=(0, 8))
+
+        self.btn_toggle_boxes = ctk.CTkButton(
+            _btn_row, text="隱藏人物框", width=88, height=28,
+            fg_color="#374151", hover_color="#4B5563",
+            command=self._toggle_person_boxes,
+        )
+        self.btn_toggle_boxes.pack(side="left")
 
         # 時間資訊：播放頭 | 剪後時長 | 全部時長
         self.lbl_duration_info = ctk.CTkLabel(

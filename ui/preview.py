@@ -41,17 +41,23 @@ class PreviewMixin:
         )
 
     def _draw_person_rois_on_canvas(self):
+        # 掃描後改由 tracking_data 的框代替，不再顯示 ROI 選取框
+        if not getattr(self, "_show_person_boxes", True):
+            return
+        if self.renderer.tracking_data:
+            return
         for idx, roi in enumerate(self.renderer.person_rois, start=1):
             x1, y1 = self._video_to_canvas(roi[0], roi[1])
             x2, y2 = self._video_to_canvas(roi[2], roi[3])
             self._draw_person_marker(idx, (x1, y1, x2, y2), f"人物 {idx}")
 
     def _draw_preview_boxes_on_canvas(self):
+        if not getattr(self, "_show_person_boxes", True):
+            return
         speakers = set(self.renderer.data_processor.get_unique_speakers()) if self.renderer.data_processor.has_data() else None
         for box in self.preview_boxes:
             tid = int(box["id"])
             label = self.renderer.yolo_id_to_speaker.get(tid, f"人物 {tid}")
-            # 如果腳本中不包含該說話者，就不要在畫面上繪製其人物框
             if speakers is not None and label not in speakers:
                 continue
             x1, y1 = self._video_to_canvas(box["bbox"][0], box["bbox"][1])
@@ -62,17 +68,17 @@ class PreviewMixin:
         x1, y1, x2, y2 = rect
         color = self.renderer.bubble_color_hex(tid)
         text_color = self.renderer.bubble_text_hex(tid)
-        self.preview_canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=3)
+        self.preview_canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=1)
         text_id = self.preview_canvas.create_text(
-            x1 + 8, y1 + 8, anchor="nw",
+            x1 + 5, y1 + 4, anchor="nw",
             text=label, fill=text_color,
-            font=("Microsoft JhengHei UI", 12, "bold"),
+            font=("Microsoft JhengHei UI", 9),
         )
         bbox = self.preview_canvas.bbox(text_id)
         if bbox:
-            pad = 4
+            pad = 3
             bg_id = self.preview_canvas.create_rectangle(
-                bbox[0] - pad, bbox[1] - 2, bbox[2] + pad, bbox[3] + 2,
+                bbox[0] - pad, bbox[1] - 1, bbox[2] + pad, bbox[3] + 1,
                 fill=color, outline=color,
             )
             self.preview_canvas.tag_lower(bg_id, text_id)

@@ -242,9 +242,9 @@ class WaveformMixin:
             canvas.create_rectangle(draw_x, 18, draw_x2, height, fill=fill, stipple="gray25", outline="")
             canvas.create_rectangle(draw_x, 18, draw_x2, height, outline=outline, width=width_px)
             if 0 <= x <= width:
-                canvas.create_rectangle(max(0, x - 4), 18, min(width, x + 4), height, fill="#22C55E", outline="")
+                canvas.create_rectangle(max(0, x - 1), 18, min(width, x + 1), height, fill="#22C55E", outline="")
             if 0 <= x2 <= width:
-                canvas.create_rectangle(max(0, x2 - 4), 18, min(width, x2 + 4), height, fill="#EF4444", outline="")
+                canvas.create_rectangle(max(0, x2 - 1), 18, min(width, x2 + 1), height, fill="#EF4444", outline="")
             self.waveform_dialogue_handles.append({
                 "row_idx": row_idx, "start": start, "end": end, "x1": x, "x2": x2,
             })
