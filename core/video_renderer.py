@@ -66,6 +66,7 @@ class VideoRenderer:
         self.fps: float = 30
         self.video_width = 0
         self.video_height = 0
+        self._yolo_device: str | None = None  # None = 自動; "cpu" = 強制 CPU
         self._preview_cap = None
         self._preview_cap_path: str | None = None
         self._preview_lock = threading.Lock()
@@ -81,8 +82,43 @@ class VideoRenderer:
     def ensure_model(self):
         if self.yolo_model is None:
             from ultralytics import YOLO
+            import torch
             model_path = os.path.join(ROOT_DIR, MODEL_PATH)
             self.yolo_model = YOLO(model_path if os.path.exists(model_path) else MODEL_PATH)
+            if not torch.cuda.is_available():
+                self._yolo_device = "cpu"
+                if self.ui_callback:
+                    self.ui_callback("error_log", "未偵測到 NVIDIA GPU，使用 CPU 推論。")
+
+    def _yolo_predict(self, source, **kwargs):
+        """YOLO predict；無 GPU 或 CUDA 異常時自動退回 CPU。"""
+        if self._yolo_device:
+            kwargs.setdefault("device", self._yolo_device)
+        try:
+            return self.yolo_model.predict(source, **kwargs)
+        except RuntimeError as exc:
+            if "cudnn" in str(exc).lower() or "cuda" in str(exc).lower():
+                self._yolo_device = "cpu"
+                if self.ui_callback:
+                    self.ui_callback("error_log", "GPU 發生錯誤，已自動改用 CPU 推論。")
+                kwargs["device"] = "cpu"
+                return self.yolo_model.predict(source, **kwargs)
+            raise
+
+    def _yolo_track(self, source, **kwargs):
+        """YOLO track；無 GPU 或 CUDA 異常時自動退回 CPU。"""
+        if self._yolo_device:
+            kwargs.setdefault("device", self._yolo_device)
+        try:
+            return self.yolo_model.track(source, **kwargs)
+        except RuntimeError as exc:
+            if "cudnn" in str(exc).lower() or "cuda" in str(exc).lower():
+                self._yolo_device = "cpu"
+                if self.ui_callback:
+                    self.ui_callback("error_log", "GPU 發生錯誤，已自動改用 CPU 推論。")
+                kwargs["device"] = "cpu"
+                return self.yolo_model.track(source, **kwargs)
+            raise
 
     def set_video_resolution(self, width: int, height: int) -> int:
         self.video_width = width
@@ -392,44 +428,51 @@ class VideoRenderer:
 
         self.tracking_data = {}
         frame_count = 0
-        limit = max_frames or self.total_frames
-        # 某些格式（MKV 等）OpenCV 讀不到 frame count，total_frames=0 → limit=0 → 迴圈不跑
-        # 改成讀到 EOF 為止
-        read_to_eof = (limit == 0)
+        limit = max_frames or self.total_frames or 999_999
+        if self.ui_callback:
+            self.ui_callback("error_log", f"掃描開始：{self.total_frames} 幀，{len(self.person_rois)} 個人物框")
         last_person_boxes: dict = {}
+        import traceback as _tb
         try:
-            while cap.isOpened() and self.is_processing and (read_to_eof or frame_count < limit):
+            while cap.isOpened() and self.is_processing and frame_count < limit:
                 ret, frame = cap.read()
                 if not ret:
                     break
                 frame_count += 1
-                if self.person_rois:
-                    boxes_list = self._scan_person_rois(frame, last_person_boxes)
-                else:
-                    results = self.yolo_model.track(frame, persist=True, tracker="bytetrack.yaml", classes=[0], verbose=False)
-                    boxes_list = []
-                    if results and results[0].boxes is not None and results[0].boxes.id is not None:
-                        boxes = results[0].boxes.xyxy.cpu().numpy()
-                        track_ids = results[0].boxes.id.cpu().int().numpy()
-                        confs = results[0].boxes.conf.cpu().numpy()
-                        frame_area = frame.shape[0] * frame.shape[1]
-                        min_box_area = frame_area * 0.008  # 忽略佔畫面不足 0.8% 的小框（遠景路人）
-                        for box, track_id, conf in zip(boxes, track_ids, confs):
-                            if conf < 0.45:  # 過濾低信心度偵測
-                                continue
-                            x1, y1, x2, y2 = box
-                            if (x2 - x1) * (y2 - y1) < min_box_area:  # 過濾超小框
-                                continue
-                            head_h = min(int((x2 - x1) * 1.05), int((y2 - y1) * 0.42), int(y2 - y1))
-                            bbox = (int(x1), int(y1), int(x2), int(y1 + head_h))
-                            tid = int(track_id)
-                            boxes_list.append({"id": tid, "bbox": bbox})
-                            self._auto_assign_speaker(tid)
-                self.tracking_data[frame_count] = boxes_list
+                try:
+                    if self.person_rois:
+                        boxes_list = self._scan_person_rois(frame, last_person_boxes)
+                    else:
+                        results = self._yolo_track(frame, persist=True, tracker="bytetrack.yaml", classes=[0], verbose=False)
+                        boxes_list = []
+                        if results and results[0].boxes is not None and results[0].boxes.id is not None:
+                            boxes = results[0].boxes.xyxy.cpu().numpy()
+                            track_ids = results[0].boxes.id.cpu().int().numpy()
+                            confs = results[0].boxes.conf.cpu().numpy()
+                            frame_area = frame.shape[0] * frame.shape[1]
+                            min_box_area = frame_area * 0.008
+                            for box, track_id, conf in zip(boxes, track_ids, confs):
+                                if conf < 0.45:
+                                    continue
+                                x1, y1, x2, y2 = box
+                                if (x2 - x1) * (y2 - y1) < min_box_area:
+                                    continue
+                                head_h = min(int((x2 - x1) * 1.05), int((y2 - y1) * 0.42), int(y2 - y1))
+                                bbox = (int(x1), int(y1), int(x2), int(y1 + head_h))
+                                tid = int(track_id)
+                                boxes_list.append({"id": tid, "bbox": bbox})
+                                self._auto_assign_speaker(tid)
+                    self.tracking_data[frame_count] = boxes_list
+                except Exception as _e:
+                    if self.ui_callback:
+                        self.ui_callback("error_log", f"[掃描例外 frame={frame_count}] {_e}")
+                    continue
                 if self.ui_callback and frame_count % 5 == 0:
-                    self.ui_callback("progress", min(frame_count / max(limit, 1), 1.0))
+                    self.ui_callback("progress", min(frame_count / max(self.total_frames or limit, 1), 1.0))
         finally:
             cap.release()
+            if self.ui_callback:
+                self.ui_callback("error_log", f"掃描結束：已處理 {frame_count} 幀")
             if self.person_rois:
                 self._assign_default_speakers(len(self.person_rois))
             else:
@@ -462,7 +505,7 @@ class VideoRenderer:
     def _best_person_box(self, crop, offset_x: int, offset_y: int):
         if crop.size == 0:
             return None
-        results = self.yolo_model.predict(crop, classes=[0], verbose=False)
+        results = self._yolo_predict(crop, classes=[0], verbose=False)
         if not results or results[0].boxes is None or len(results[0].boxes) == 0:
             return None
         boxes = results[0].boxes.xyxy.cpu().numpy()

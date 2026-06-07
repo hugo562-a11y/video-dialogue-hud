@@ -85,6 +85,8 @@ class WorkflowMixin:
         if hasattr(self, "btn_open_export"):
             self._last_export_path = ""
             self.btn_open_export.configure(state="disabled", text="開啟輸出影片")
+        if hasattr(self, "export_path_label"):
+            self.export_path_label.configure(text="")
         if hasattr(self, "btn_scan"):
             self.btn_scan.configure(state="disabled")
         if hasattr(self, "btn_speech"):
@@ -681,8 +683,11 @@ class WorkflowMixin:
             if is_preview:
                 self._last_preview_export_path = out_path
             self._last_export_path = out_path
+            filename = os.path.basename(out_path)
             if hasattr(self, "btn_open_export"):
-                self.btn_open_export.configure(state="normal", text="開啟輸出影片")
+                self.btn_open_export.configure(state="normal", text=f"開啟：{filename}")
+            if hasattr(self, "export_path_label"):
+                self.export_path_label.configure(text=out_path)
             self.log(f"匯出完成：{out_path}")
         else:
             self.log("匯出失敗。")

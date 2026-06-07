@@ -23,7 +23,7 @@ Automatically track speakers in a video, overlay dialogue as speech bubbles, and
 
 | 功能 · Feature | 說明 · Details |
 |---|---|
-| **人物追蹤 · Person tracking** | YOLOv8 Nano 自動偵測並追蹤多位說話者 · Auto-detects and tracks multiple speakers |
+| **人物追蹤 · Person tracking** | YOLOv8 Nano 自動偵測並追蹤多位說話者；有 NVIDIA GPU 時自動啟用 GPU 加速，無 GPU 則自動退回 CPU 執行 · Auto-detects and tracks multiple speakers; uses GPU when available, falls back to CPU automatically |
 | **語音辨識 · Auto-transcription** | Faster-Whisper 從音軌產生帶時間碼的對話腳本 · Generates time-coded script from audio |
 | **對話氣泡 · Speech bubbles** | 5 種樣式 × 6 種顏色 × 4 種位置，支援拖曳調整 · 5 styles × 6 colours × 4 positions |
 | **波形編輯器 · Waveform editor** | 視覺化音軌，可手動對齊時間軸 · Visual waveform with interactive time editing |
@@ -42,7 +42,7 @@ Automatically track speakers in a video, overlay dialogue as speech bubbles, and
 | 作業系統 · OS | Windows 10 / 11（64 位元 · 64-bit） |
 | Python | 3.10 或以上 · 3.10 or newer → [python.org](https://www.python.org/downloads/) |
 | ffmpeg | 需加入系統 PATH · Must be on system PATH → [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/) 下載 `ffmpeg-release-essentials.zip` |
-| 顯示卡 · GPU | 非必要，但 NVIDIA GPU 可大幅加速掃描與辨識 · Optional, but NVIDIA GPU speeds up scanning significantly |
+| 顯示卡 · GPU | 非必要。有 NVIDIA GPU 時自動啟用 CUDA 加速；無 GPU 則自動改用 CPU，掃描速度較慢但功能完整 · Optional. NVIDIA GPU enables CUDA acceleration automatically; without one the app falls back to CPU — slower but fully functional |
 
 ### 安裝步驟 · Steps
 

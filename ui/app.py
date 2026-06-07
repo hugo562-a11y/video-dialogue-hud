@@ -238,17 +238,24 @@ class App(
             sidebar, text="開啟輸出影片", command=self.open_export_video,
             height=30, state="disabled", fg_color="#2563EB", hover_color="#1D4ED8",
         )
-        self.btn_open_export.configure(text="開啟輸出影片")
-        self.btn_open_export.grid(row=17, column=0, sticky="ew", padx=12, pady=(4, 4))
+        self.btn_open_export.grid(row=17, column=0, sticky="ew", padx=12, pady=(4, 1))
+
+        self.export_path_label = ctk.CTkLabel(
+            sidebar, text="", anchor="w", justify="left",
+            wraplength=200, font=("Microsoft JhengHei UI", 11),
+            text_color="#9CA3AF", cursor="hand2",
+        )
+        self.export_path_label.grid(row=18, column=0, sticky="ew", padx=14, pady=(0, 4))
+        self.export_path_label.bind("<Button-1>", lambda _e: self.open_export_video())
 
         self.btn_toggle_log = ctk.CTkButton(
             sidebar, text="隱藏記錄", command=self.toggle_log_panel,
             height=30, fg_color="#4B5563", hover_color="#5B6473",
         )
         self.btn_toggle_log.configure(text="顯示/隱藏記錄")
-        self.btn_toggle_log.grid(row=19, column=0, sticky="ew", padx=12, pady=(2, 4))
+        self.btn_toggle_log.grid(row=20, column=0, sticky="ew", padx=12, pady=(2, 4))
         self.log_box = ctk.CTkTextbox(sidebar, wrap="word", height=160)
-        self.log_box.grid(row=18, column=0, sticky="nsew", padx=12, pady=(4, 12))
+        self.log_box.grid(row=19, column=0, sticky="nsew", padx=12, pady=(4, 12))
 
         # ---- 中央主區域 ----
         main = ctk.CTkFrame(self, fg_color="#0B1220", corner_radius=8)
