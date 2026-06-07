@@ -1113,12 +1113,27 @@ class WorkflowMixin:
             norms = np.where(norms == 0, 1.0, norms)
             emb_array = emb_array / norms
 
-            # 階層式聚類 + 固定餘弦距離閾值：不需要預設 k，也不依賴 silhouette score。
-            # KMeans+silhouette 的問題在於多人場景的 silhouette 天然偏低，容易誤判為 1 人。
-            # 餘弦距離 0.40 = 同說話者閾值（resemblyzer 同人通常 < 0.30，不同人通常 > 0.45）
+            # 自動找閾值：固定值對人少時太鬆（2人→3群）、人多時太緊（6人→1群）。
+            # 做法：取所有成對餘弦距離，找最大跳躍點（同人距離 vs 不同人距離之間的缺口），
+            # 把閾值設在缺口中間，自動適應不同人數場景。
+            from sklearn.metrics.pairwise import cosine_distances
+            dist_mat = cosine_distances(emb_array)
+            pairs = np.triu_indices(len(emb_array), k=1)
+            all_dists = np.sort(dist_mat[pairs])
+
+            if len(all_dists) >= 4:
+                gaps = np.diff(all_dists)
+                gap_pos = int(np.argmax(gaps))
+                threshold = float(np.clip(
+                    (all_dists[gap_pos] + all_dists[gap_pos + 1]) / 2,
+                    0.22, 0.52,
+                ))
+            else:
+                threshold = 0.35
+
             clustering = AgglomerativeClustering(
                 n_clusters=None,
-                distance_threshold=0.40,
+                distance_threshold=threshold,
                 metric="cosine",
                 linkage="average",
             )
