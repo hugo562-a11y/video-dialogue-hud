@@ -1086,15 +1086,13 @@ class WorkflowMixin:
             return 1
         try:
             from resemblyzer import VoiceEncoder, preprocess_wav
-            from sklearn.cluster import KMeans
-            from sklearn.metrics import silhouette_score
+            from sklearn.cluster import AgglomerativeClustering
 
             if not getattr(self, "_voice_encoder", None):
                 self._voice_encoder = VoiceEncoder()
             encoder = self._voice_encoder
 
             embeddings = []
-            # 0.7 秒以上的片段才採用；多人輪流說短句時 1.2s 門檻會篩掉太多樣本
             min_samples = int(audio_rate * 0.7)
             for entry in entries:
                 s = int(max(0.0, entry["start"]) * audio_rate)
@@ -1107,31 +1105,26 @@ class WorkflowMixin:
                 if np.any(emb):
                     embeddings.append(emb)
 
-            if len(embeddings) < 3:
+            if len(embeddings) < 2:
                 return 1
 
             emb_array = np.array(embeddings, dtype=np.float32)
-            # L2 正規化後做 K-Means，等效於用餘弦相似度聚類
             norms = np.linalg.norm(emb_array, axis=1, keepdims=True)
             norms = np.where(norms == 0, 1.0, norms)
             emb_array = emb_array / norms
 
-            upper = min(max_speakers, len(embeddings) - 1)
-            best_k = 1
-            best_score = -1.0
-            for k in range(2, upper + 1):
-                labels = KMeans(n_clusters=k, n_init=10, random_state=42).fit_predict(emb_array)
-                if len(set(labels)) < 2:
-                    continue
-                score = float(silhouette_score(emb_array, labels))
-                if score > best_score:
-                    best_score = score
-                    best_k = k
-
-            # silhouette score 隨 k 增加自然下降；用漸進式閾值避免低估多人場景
-            # k=2:0.20  k=3:0.17  k=4:0.14  k=5:0.11  k=6+:0.10
-            threshold = max(0.10, 0.23 - (best_k - 2) * 0.03)
-            return best_k if best_score >= threshold else 1
+            # 階層式聚類 + 固定餘弦距離閾值：不需要預設 k，也不依賴 silhouette score。
+            # KMeans+silhouette 的問題在於多人場景的 silhouette 天然偏低，容易誤判為 1 人。
+            # 餘弦距離 0.40 = 同說話者閾值（resemblyzer 同人通常 < 0.30，不同人通常 > 0.45）
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=0.40,
+                metric="cosine",
+                linkage="average",
+            )
+            labels = clustering.fit_predict(emb_array)
+            n_clusters = len(set(labels))
+            return max(1, min(n_clusters, max_speakers))
         except Exception as exc:
             self.ui_queue.put({"type": "error_log", "text": f"聲紋估算失敗，先使用 1 個人物：{exc}"})
             return 1
