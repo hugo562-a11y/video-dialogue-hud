@@ -711,13 +711,54 @@ class WorkflowMixin:
         add_person_button = ctk.CTkButton(
             header_frame,
             text="新增人物",
-            width=120,
+            width=100,
             command=lambda: add_person(),
         )
         add_person_button.pack(side="right")
 
+        # ---- 重新分群列（只在有語音辨識結果時才有意義）----
+        regroup_frame = ctk.CTkFrame(win, fg_color="transparent")
+        regroup_frame.pack(fill="x", padx=14, pady=(0, 6))
+        ctk.CTkLabel(regroup_frame, text="說話者人數：",
+                     font=("Microsoft JhengHei UI", 13)).pack(side="left")
+        spk_count_var = ctk.IntVar(value=max(1, len(ids)))
+
+        def _dec():
+            if spk_count_var.get() > 1:
+                spk_count_var.set(spk_count_var.get() - 1)
+
+        def _inc():
+            if spk_count_var.get() < 12:
+                spk_count_var.set(spk_count_var.get() + 1)
+
+        ctk.CTkButton(regroup_frame, text="−", width=30, height=30,
+                      font=("Arial", 16, "bold"), command=_dec).pack(side="left", padx=(4, 2))
+        ctk.CTkLabel(regroup_frame, textvariable=spk_count_var,
+                     font=("Arial", 18, "bold"), width=36).pack(side="left")
+        ctk.CTkButton(regroup_frame, text="+", width=30, height=30,
+                      font=("Arial", 16, "bold"), command=_inc).pack(side="left", padx=(2, 8))
+
+        def _regroup():
+            new_n = spk_count_var.get()
+            self.renderer.expected_people_count = new_n
+            for i in range(1, new_n + 1):
+                self.renderer.yolo_id_to_speaker.setdefault(i, f"人物 {i}")
+            if getattr(self, "_speech_segments", None):
+                self.reassign_speech_rows()
+            # 重建列表
+            for w in scroll.winfo_children():
+                w.destroy()
+            rows.clear()
+            for tid in range(1, new_n + 1):
+                make_row(tid)
+            self._speaker_mapper_info.configure(text=f"已重新分群為 {new_n} 人，請確認名稱。")
+            self.log(f"已重新分群為 {new_n} 個人物。")
+
+        ctk.CTkButton(regroup_frame, text="重新分群", width=90,
+                      command=_regroup).pack(side="left")
+
         scroll = ctk.CTkScrollableFrame(win)
-        scroll.pack(expand=True, fill="both", padx=14, pady=8)
+        scroll.pack(expand=True, fill="both", padx=14, pady=(0, 8))
         rows = []
         color_names = list(BUBBLE_COLOR_OPTIONS.keys())
 
@@ -801,49 +842,6 @@ class WorkflowMixin:
             win.destroy()
 
         ctk.CTkButton(win, text="套用", command=save, height=36).pack(pady=(6, 16))
-
-    def _show_speaker_count_dialog(self, initial_count, reply, event):
-        """聲紋估算後，讓使用者確認或調整說話者人數（帶 − / + 按鈕）。"""
-        win = ctk.CTkToplevel(self)
-        win.title("確認說話者人數")
-        win.geometry("320x210")
-        win.transient(self)
-        win.grab_set()
-        win.resizable(False, False)
-
-        ctk.CTkLabel(
-            win,
-            text="聲紋估算完成，請確認說話者人數：",
-            font=("Microsoft JhengHei UI", 13),
-        ).pack(pady=(22, 12))
-
-        count_var = ctk.IntVar(value=max(1, initial_count))
-
-        ctrl = ctk.CTkFrame(win, fg_color="transparent")
-        ctrl.pack()
-
-        def decrement():
-            if count_var.get() > 1:
-                count_var.set(count_var.get() - 1)
-
-        def increment():
-            if count_var.get() < 12:
-                count_var.set(count_var.get() + 1)
-
-        ctk.CTkButton(ctrl, text="−", width=48, height=48,
-                      font=("Arial", 22, "bold"), command=decrement).pack(side="left", padx=10)
-        ctk.CTkLabel(ctrl, textvariable=count_var,
-                     font=("Arial", 36, "bold"), width=64).pack(side="left")
-        ctk.CTkButton(ctrl, text="+", width=48, height=48,
-                      font=("Arial", 22, "bold"), command=increment).pack(side="left", padx=10)
-
-        def confirm():
-            reply["count"] = count_var.get()
-            win.destroy()
-            event.set()
-
-        win.protocol("WM_DELETE_WINDOW", confirm)
-        ctk.CTkButton(win, text="確認", width=120, height=36, command=confirm).pack(pady=(14, 0))
 
     def _prompt_person_count(self):
         if self.renderer.person_rois or self.renderer.expected_people_count != 1:
@@ -1258,16 +1256,11 @@ class WorkflowMixin:
         if not self.renderer.person_rois and n_speakers <= 1:
             self.ui_queue.put({"type": "error_log", "text": "語音辨識完成，正在進行聲紋估算人物數..."})
             estimated = self._estimate_speaker_count_resemblyzer(cleaned, audio, audio_rate)
-            # 讓使用者在主執行緒確認／調整估算結果，背景執行緒等待
-            reply = {"count": estimated}
-            ev = threading.Event()
-            self.ui_queue.put({"type": "ask_speaker_count", "count": estimated, "reply": reply, "event": ev})
-            ev.wait(timeout=300)
-            n_speakers = max(1, reply["count"])
+            n_speakers = estimated
             self.renderer.expected_people_count = n_speakers
             for idx in range(1, n_speakers + 1):
                 self.renderer.yolo_id_to_speaker.setdefault(idx, f"人物 {idx}")
-            self.ui_queue.put({"type": "error_log", "text": f"說話者人數設定為 {n_speakers} 人。"})
+            self.ui_queue.put({"type": "error_log", "text": f"聲紋估算為 {n_speakers} 個人物。"})
         if n_speakers > 1:
             self.ui_queue.put({"type": "error_log", "text": f"正在依 {n_speakers} 個人物做聲紋分群。"})
         speaker_labels = self._assign_speakers_resemblyzer(cleaned, audio, audio_rate, n_speakers)

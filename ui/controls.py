@@ -279,8 +279,6 @@ class ControlsMixin:
                             self._preview_render_pending = False
                     elif msg["type"] == "speech_done":
                         self.on_speech_done(msg["rows"], msg["out_csv"])
-                    elif msg["type"] == "ask_speaker_count":
-                        self._show_speaker_count_dialog(msg["count"], msg["reply"], msg["event"])
                     elif msg["type"] == "error":
                         self.on_worker_error(msg["text"])
                     elif msg["type"] == "error_log":
