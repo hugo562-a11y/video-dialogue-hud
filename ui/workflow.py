@@ -1127,15 +1127,14 @@ class WorkflowMixin:
             return 1
         try:
             from resemblyzer import VoiceEncoder, preprocess_wav
-            from sklearn.decomposition import PCA
-            from sklearn.mixture import GaussianMixture
+            from sklearn.cluster import AgglomerativeClustering
 
             if not getattr(self, "_voice_encoder", None):
                 self._voice_encoder = VoiceEncoder()
             encoder = self._voice_encoder
 
             embeddings = []
-            min_samples = int(audio_rate * 0.6)
+            min_samples = int(audio_rate * 0.7)
             for entry in entries:
                 s = int(max(0.0, entry["start"]) * audio_rate)
                 e = int(max(entry["start"], entry["end"]) * audio_rate)
@@ -1147,7 +1146,7 @@ class WorkflowMixin:
                 if np.any(emb):
                     embeddings.append(emb)
 
-            if len(embeddings) < 3:
+            if len(embeddings) < 2:
                 return 1
 
             emb_array = np.array(embeddings, dtype=np.float32)
@@ -1155,30 +1154,17 @@ class WorkflowMixin:
             norms = np.where(norms == 0, 1.0, norms)
             emb_array = emb_array / norms
 
-            # GMM + BIC：speaker diarization 學術標準做法。
-            # BIC 自動懲罰過多的群數，不需要固定閾值或找缺口，
-            # 對人少（2人）和人多（6人）場景都能給出合理估算。
-            # PCA 先降維，避免 256 維高維空間樣本太少導致 GMM 退化。
-            n_pca = min(10, len(embeddings) - 1)
-            reduced = PCA(n_components=n_pca).fit_transform(emb_array)
-
-            upper = min(max_speakers, max(1, len(embeddings) // 2))
-            best_k, best_bic = 1, np.inf
-            for k in range(1, upper + 1):
-                try:
-                    gmm = GaussianMixture(
-                        n_components=k, covariance_type="diag",
-                        n_init=5, random_state=42, reg_covar=1e-2,
-                    )
-                    gmm.fit(reduced)
-                    bic = gmm.bic(reduced)
-                    if bic < best_bic:
-                        best_bic = bic
-                        best_k = k
-                except Exception:
-                    break
-
-            return max(1, min(best_k, max_speakers))
+            # 階層式聚類 + 固定餘弦距離閾值 0.40
+            # 偶爾會多估 1 人，但比低估好修正（用命名視窗的 − 按鈕調回）
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=0.40,
+                metric="cosine",
+                linkage="average",
+            )
+            labels = clustering.fit_predict(emb_array)
+            n_clusters = len(set(labels))
+            return max(1, min(n_clusters, max_speakers))
         except Exception as exc:
             self.ui_queue.put({"type": "error_log", "text": f"聲紋估算失敗，先使用 1 個人物：{exc}"})
             return 1
