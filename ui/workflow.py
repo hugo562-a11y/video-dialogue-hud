@@ -802,6 +802,49 @@ class WorkflowMixin:
 
         ctk.CTkButton(win, text="套用", command=save, height=36).pack(pady=(6, 16))
 
+    def _show_speaker_count_dialog(self, initial_count, reply, event):
+        """聲紋估算後，讓使用者確認或調整說話者人數（帶 − / + 按鈕）。"""
+        win = ctk.CTkToplevel(self)
+        win.title("確認說話者人數")
+        win.geometry("320x210")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        ctk.CTkLabel(
+            win,
+            text="聲紋估算完成，請確認說話者人數：",
+            font=("Microsoft JhengHei UI", 13),
+        ).pack(pady=(22, 12))
+
+        count_var = ctk.IntVar(value=max(1, initial_count))
+
+        ctrl = ctk.CTkFrame(win, fg_color="transparent")
+        ctrl.pack()
+
+        def decrement():
+            if count_var.get() > 1:
+                count_var.set(count_var.get() - 1)
+
+        def increment():
+            if count_var.get() < 12:
+                count_var.set(count_var.get() + 1)
+
+        ctk.CTkButton(ctrl, text="−", width=48, height=48,
+                      font=("Arial", 22, "bold"), command=decrement).pack(side="left", padx=10)
+        ctk.CTkLabel(ctrl, textvariable=count_var,
+                     font=("Arial", 36, "bold"), width=64).pack(side="left")
+        ctk.CTkButton(ctrl, text="+", width=48, height=48,
+                      font=("Arial", 22, "bold"), command=increment).pack(side="left", padx=10)
+
+        def confirm():
+            reply["count"] = count_var.get()
+            win.destroy()
+            event.set()
+
+        win.protocol("WM_DELETE_WINDOW", confirm)
+        ctk.CTkButton(win, text="確認", width=120, height=36, command=confirm).pack(pady=(14, 0))
+
     def _prompt_person_count(self):
         if self.renderer.person_rois or self.renderer.expected_people_count != 1:
             return
@@ -1215,14 +1258,16 @@ class WorkflowMixin:
         if not self.renderer.person_rois and n_speakers <= 1:
             self.ui_queue.put({"type": "error_log", "text": "語音辨識完成，正在進行聲紋估算人物數..."})
             estimated = self._estimate_speaker_count_resemblyzer(cleaned, audio, audio_rate)
-            if estimated > 1:
-                self.renderer.expected_people_count = estimated
-                n_speakers = estimated
-                for idx in range(1, estimated + 1):
-                    self.renderer.yolo_id_to_speaker.setdefault(idx, f"人物 {idx}")
-                self.ui_queue.put({"type": "error_log", "text": f"聲紋估算為 {estimated} 個人物。"})
-            else:
-                self.ui_queue.put({"type": "error_log", "text": "聲紋估算為 1 個人物。"})
+            # 讓使用者在主執行緒確認／調整估算結果，背景執行緒等待
+            reply = {"count": estimated}
+            ev = threading.Event()
+            self.ui_queue.put({"type": "ask_speaker_count", "count": estimated, "reply": reply, "event": ev})
+            ev.wait(timeout=300)
+            n_speakers = max(1, reply["count"])
+            self.renderer.expected_people_count = n_speakers
+            for idx in range(1, n_speakers + 1):
+                self.renderer.yolo_id_to_speaker.setdefault(idx, f"人物 {idx}")
+            self.ui_queue.put({"type": "error_log", "text": f"說話者人數設定為 {n_speakers} 人。"})
         if n_speakers > 1:
             self.ui_queue.put({"type": "error_log", "text": f"正在依 {n_speakers} 個人物做聲紋分群。"})
         speaker_labels = self._assign_speakers_resemblyzer(cleaned, audio, audio_rate, n_speakers)
