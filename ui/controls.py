@@ -105,13 +105,27 @@ class ControlsMixin:
             self.start_preview_playback()
         return "break"
 
-    def start_preview_playback(self):
+    def start_preview_playback(self, play_edited=False):
         if self.preview_playing:
             return
+        self._play_edited = play_edited
         self.preview_playing = True
-        self._preview_play_start_frame = int(float(self.slider_timeline.get()))
+        start_frame = int(float(self.slider_timeline.get()))
+        self._preview_play_start_frame = start_frame
+
+        # 開一個獨立的循序讀取 cap，播放時不用每幀 seek
+        self._play_seq_cap = None
+        self._play_seq_idx = start_frame
+        if self.renderer.video_path:
+            safe = get_safe_path(self.renderer.video_path)
+            _cap = cv2.VideoCapture(safe)
+            if _cap.isOpened():
+                _cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, start_frame - 1))
+                self._play_seq_cap = _cap
+
         self.start_preview_audio()
-        self._preview_play_start_time = time.perf_counter()
+        # +0.12s 補償 ffplay 啟動延遲，讓畫面等聲音就緒後再推進
+        self._preview_play_start_time = time.perf_counter() + 0.12
         self._last_playback_ui_sync_time = 0.0
         self._play_preview_step()
 
@@ -123,31 +137,95 @@ class ControlsMixin:
             except Exception:
                 pass
             self._preview_play_after_id = None
+        _cap = getattr(self, "_play_seq_cap", None)
+        if _cap is not None:
+            _cap.release()
+            self._play_seq_cap = None
         self.stop_audio_preview()
 
     def _play_preview_step(self):
         if not self.preview_playing:
             return
+        fps   = max(self.renderer.fps or 30, 1)
         total = max(1, int(self.renderer.total_frames or self._preview_play_start_frame))
-        elapsed = time.perf_counter() - self._preview_play_start_time
-        frame_idx = self._preview_play_start_frame + int(elapsed * max(self.renderer.fps or 30, 1))
-        frame_idx = max(1, min(total, frame_idx))
-        if frame_idx >= total:
+        elapsed      = max(0.0, time.perf_counter() - self._preview_play_start_time)
+        target_frame = min(total, self._preview_play_start_frame + int(elapsed * fps))
+
+        cap = getattr(self, "_play_seq_cap", None)
+
+        # 播放剪後：遇到剪掉段落跳過，循序 cap 也一起 seek 到跳轉點
+        if getattr(self, "_play_edited", False) and self.renderer.cut_ranges:
+            current_secs = (target_frame - 1) / fps
+            for s, e in self.renderer.cut_ranges:
+                if s <= current_secs < e:
+                    jump = max(1, min(total, int(e * fps) + 1))
+                    if cap is not None:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, jump - 1))
+                        self._play_seq_idx = jump
+                    self._preview_play_start_frame = jump
+                    self._preview_play_start_time  = time.perf_counter() + 0.12
+                    self.slider_timeline.set(jump)
+                    self.stop_audio_preview()
+                    self.start_preview_audio()
+                    target_frame = jump
+                    break
+
+        # 循序讀幀追上 target_frame：落後時跳幀，超前時什麼都不做
+        cv_frame     = None
+        actual_frame = max(1, self._play_seq_idx - 1)
+
+        if cap is not None and cap.isOpened():
+            while self._play_seq_idx <= target_frame:
+                ret, f = cap.read()
+                if not ret:
+                    self.stop_preview_playback()
+                    return
+                cv_frame     = f
+                actual_frame = self._play_seq_idx
+                self._play_seq_idx += 1
+
+        if actual_frame >= total:
             self.stop_preview_playback()
             return
+
         now = time.perf_counter()
-        self.slider_timeline.set(frame_idx)
+        self.slider_timeline.set(actual_frame)
         sync_ui = now - getattr(self, "_last_playback_ui_sync_time", 0.0) >= 0.20
-        self.update_timecode_and_waveform(frame_idx, draw_waveform=sync_ui)
+        self.update_timecode_and_waveform(actual_frame, draw_waveform=sync_ui)
         if sync_ui:
             self._last_playback_ui_sync_time = now
-            self.sync_fields_for_frame(frame_idx)
-        render_fps = min(max(self.renderer.fps or 30, 1), 18)
-        if not self._preview_render_pending and now - self._last_preview_render_time >= 1.0 / render_fps:
+            self.sync_fields_for_frame(actual_frame)
+
+        # 已解碼幀直接套泡泡，完全不需再 seek
+        if cv_frame is not None and not self._preview_render_pending:
             self._last_preview_render_time = now
-            self._render_scrub(frame_idx)
-        delay_ms = max(15, int(1000 / min(max(self.renderer.fps or 30, 1), 30)))
+            self._render_play_frame(cv_frame, actual_frame)
+
+        delay_ms = max(8, int(1000 / min(fps, 60)))
         self._preview_play_after_id = self.after(delay_ms, self._play_preview_step)
+
+    def _render_play_frame(self, cv_frame, frame_idx):
+        """播放專用渲染：直接對已解碼幀套泡泡，不再 seek VideoCapture。"""
+        self._preview_render_pending = True
+        self._preview_request_id += 1
+        request_id = self._preview_request_id
+
+        def worker():
+            try:
+                img = self.renderer.render_frame_with_bubbles(cv_frame, frame_idx)
+                if img is None:
+                    self.ui_queue.put({"type": "preview_done", "request_id": request_id})
+                    return
+                self.ui_queue.put({
+                    "type": "preview",
+                    "request_id": request_id,
+                    "img": img,
+                    "boxes": self.renderer.tracking_data.get(frame_idx, []),
+                })
+            except Exception:
+                self.ui_queue.put({"type": "preview_done", "request_id": request_id})
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def start_preview_audio(self):
         if not self.renderer.video_path or not self.renderer.fps:
@@ -390,14 +468,45 @@ class ControlsMixin:
             self.after_cancel(self._scrub_after_id)
         self._scrub_after_id = self.after(80, lambda: self._render_scrub(frame_idx))
 
+    def _set_play_buttons_state(self, state: str):
+        if hasattr(self, "btn_play_all"):
+            self.btn_play_all.configure(state=state)
+        if hasattr(self, "btn_play_edited"):
+            self.btn_play_edited.configure(state=state)
+
     def update_timecode_and_waveform(self, frame_idx, draw_waveform=True):
-        if self.renderer.fps:
-            seconds = int(frame_to_seconds(frame_idx, self.renderer.fps))
+        fps = self.renderer.fps
+        if fps:
+            seconds = int(frame_to_seconds(frame_idx, fps))
             mm, ss = divmod(seconds, 60)
             hh, mm = divmod(mm, 60)
             self.lbl_timecode.configure(text=f"{hh:02d}:{mm:02d}:{ss:02d}" if hh else f"{mm:02d}:{ss:02d}")
+        if hasattr(self, "lbl_duration_info"):
+            self.lbl_duration_info.configure(text=self._duration_info_text(frame_idx))
         if draw_waveform:
             self.draw_waveform(frame_idx)
+
+    def _duration_info_text(self, frame_idx=None) -> str:
+        fps   = self.renderer.fps or 30
+        total = self.renderer.total_frames or 0
+        if not total:
+            return ""
+        total_secs = total / fps
+
+        cut_secs = sum(max(0.0, e - s) for s, e in (self.renderer.cut_ranges or []))
+        edited_secs = max(0.0, total_secs - cut_secs)
+
+        def fmt(s: float) -> str:
+            s = int(s)
+            mm, ss = divmod(s, 60)
+            hh, mm = divmod(mm, 60)
+            return f"{hh:02d}:{mm:02d}:{ss:02d}" if hh else f"{mm:02d}:{ss:02d}"
+
+        if frame_idx and fps:
+            cur = fmt(frame_to_seconds(frame_idx, fps))
+        else:
+            cur = "00:00"
+        return f"{cur}  |  剪後 {fmt(edited_secs)}  |  全長 {fmt(total_secs)}"
 
     def _render_scrub(self, frame_idx):
         self._preview_render_pending = True

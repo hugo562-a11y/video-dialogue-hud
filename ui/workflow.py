@@ -87,6 +87,10 @@ class WorkflowMixin:
             self.btn_open_export.configure(state="disabled", text="開啟輸出影片")
         if hasattr(self, "export_path_label"):
             self.export_path_label.configure(text="")
+        if hasattr(self, "btn_play_all"):
+            self.btn_play_all.configure(state="disabled")
+        if hasattr(self, "btn_play_edited"):
+            self.btn_play_edited.configure(state="disabled")
         if hasattr(self, "btn_scan"):
             self.btn_scan.configure(state="disabled")
         if hasattr(self, "btn_speech"):
@@ -338,6 +342,7 @@ class WorkflowMixin:
             # Enable timeline preview once script data is available.
             if self.renderer.total_frames and not self.renderer.tracking_data:
                 self.slider_timeline.configure(state="normal", from_=1, to=self.renderer.total_frames)
+                self._set_play_buttons_state("normal")
                 self.slider_timeline.set(1)
                 self.on_timeline_scrub(1)
 
@@ -532,6 +537,7 @@ class WorkflowMixin:
             # Enable timeline preview once script data is available.
         if self.renderer.total_frames:
             self.slider_timeline.configure(state="normal", from_=1, to=self.renderer.total_frames)
+            self._set_play_buttons_state("normal")
             self.slider_timeline.set(1)
             self.on_timeline_scrub(1)
 
@@ -580,6 +586,7 @@ class WorkflowMixin:
             self.btn_export_preview.configure(state="disabled")
         self.btn_export.configure(state="disabled")
         self.slider_timeline.configure(state="disabled")
+        self._set_play_buttons_state("disabled")
         self.progress_bar.set(0)
         self.log("開始掃描人物。")
         threading.Thread(target=self.renderer.scan_video, daemon=True).start()
@@ -588,6 +595,7 @@ class WorkflowMixin:
         self.btn_scan.configure(state="normal", text="5  重新掃描人物")
         if self.renderer.tracking_data:
             self.slider_timeline.configure(state="normal", from_=1, to=max(1, self.renderer.total_frames))
+            self._set_play_buttons_state("normal")
             self.slider_timeline.set(1)
             if hasattr(self, "btn_export_preview"):
                 self.btn_export_preview.configure(state="normal")
@@ -640,6 +648,7 @@ class WorkflowMixin:
         self.btn_export.configure(state="disabled")
         self.btn_scan.configure(state="disabled")
         self.slider_timeline.configure(state="disabled")
+        self._set_play_buttons_state("disabled")
         self.progress_bar.set(0)
         self.log("開始匯出預覽影片。")
         threading.Thread(target=lambda: self.renderer.export_video(preview=True), daemon=True).start()
@@ -662,6 +671,7 @@ class WorkflowMixin:
         self.btn_export.configure(state="disabled", text="匯出中...")
         self.btn_scan.configure(state="disabled")
         self.slider_timeline.configure(state="disabled")
+        self._set_play_buttons_state("disabled")
         self.progress_bar.set(0)
         self.log("開始匯出完成品。")
         threading.Thread(target=lambda: self.renderer.export_video(preview=False), daemon=True).start()
@@ -678,6 +688,7 @@ class WorkflowMixin:
         self.btn_export.configure(state="normal", text="重新匯出完成品")
         self.btn_scan.configure(state="normal", text="重新掃描人物")
         self.slider_timeline.configure(state="normal")
+        self._set_play_buttons_state("normal")
         self.progress_bar.set(1)
         if out_path:
             if is_preview:

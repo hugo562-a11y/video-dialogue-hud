@@ -336,7 +336,32 @@ class App(
         self.lbl_timecode = ctk.CTkLabel(
             tool_row, text="00:00", width=70, font=("Consolas", 15, "bold"), text_color="#43E2A8"
         )
-        self.lbl_timecode.grid(row=0, column=0, sticky="w", padx=(8, 8), pady=(8, 4))
+        self.lbl_timecode.grid(row=0, column=0, sticky="w", padx=(8, 4), pady=(8, 4))
+
+        # 播放按鈕
+        _btn_row = ctk.CTkFrame(tool_row, fg_color="transparent")
+        _btn_row.grid(row=0, column=1, sticky="w", padx=4, pady=(6, 4))
+        self.btn_play_all = ctk.CTkButton(
+            _btn_row, text="▶ 播放全部", width=100, height=28,
+            fg_color="#2563EB", hover_color="#1D4ED8",
+            command=lambda: self.start_preview_playback(play_edited=False),
+            state="disabled",
+        )
+        self.btn_play_all.pack(side="left", padx=(0, 4))
+        self.btn_play_edited = ctk.CTkButton(
+            _btn_row, text="▶ 播放剪後", width=100, height=28,
+            fg_color="#065F46", hover_color="#047857",
+            command=lambda: self.start_preview_playback(play_edited=True),
+            state="disabled",
+        )
+        self.btn_play_edited.pack(side="left")
+
+        # 時間資訊：播放頭 | 剪後時長 | 全部時長
+        self.lbl_duration_info = ctk.CTkLabel(
+            tool_row, text="", font=("Consolas", 11), text_color="#6B7280", anchor="e"
+        )
+        self.lbl_duration_info.grid(row=0, column=2, sticky="e", padx=(4, 12), pady=(8, 4))
+
         self.slider_timeline = ctk.CTkSlider(tool_row, from_=1, to=1, command=self.on_timeline_scrub, state="disabled")
 
         self.waveform_canvas = tk.Canvas(tool_row, height=128, bg="#111827", highlightthickness=0)

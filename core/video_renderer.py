@@ -723,6 +723,27 @@ class VideoRenderer:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return self._resize_preview(rgb)
 
+    def render_frame_with_bubbles(self, cv_frame, frame_idx: int):
+        """對已解碼的 cv2 BGR 幀套上氣泡，回傳縮放後的 RGB array（播放用，不需 seek）。"""
+        with self._preview_lock:
+            self.bubble_rects = {}
+            frame = cv_frame.copy()
+            boxes = self.tracking_data.get(frame_idx, [])
+            if boxes:
+                for box_data in boxes:
+                    text = self._text_for_track(frame_idx, box_data["id"])
+                    self.draw_speech_bubble(frame, text, box_data["id"], boxes)
+            elif not self.tracking_data and self.data_processor.has_data():
+                row_idx, text = self.data_processor.find_dialogue_at_time(frame_idx, self.fps)
+                if text:
+                    fh, fw = frame.shape[:2]
+                    speaker, _ = self.data_processor.get_dialogue_row_values(row_idx)
+                    track_id = self._track_id_for_speaker(speaker)
+                    dummy_box = self._pre_scan_dummy_box(fw, fh, track_id)
+                    self.draw_speech_bubble(frame, text, track_id, [dummy_box], draw_connector=False)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            return self._resize_preview(rgb)
+
     def _resize_preview(self, rgb):
         h, w = rgb.shape[:2]
         scale = min(MAX_PREVIEW_SIZE / max(w, 1), MAX_PREVIEW_SIZE / max(h, 1), 1.0)
