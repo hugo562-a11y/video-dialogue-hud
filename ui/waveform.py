@@ -23,8 +23,9 @@ class WaveformMixin:
         self._clear_waveform_audio_cache()
         fd, wav_path = tempfile.mkstemp(suffix="_waveform.wav")
         os.close(fd)
+        source_path = getattr(self.renderer, "source_video_path", None) or self.renderer.video_path
         cmd = [
-            ffmpeg, "-y", "-v", "error", "-i", get_safe_path(self.renderer.video_path),
+            ffmpeg, "-y", "-v", "error", "-i", get_safe_path(source_path),
             "-vn", "-ac", "1", "-ar", "16000", "-acodec", "pcm_s16le", wav_path
         ]
         startupinfo = None
@@ -355,6 +356,7 @@ class WaveformMixin:
         if not dp.update_dialogue_time(row_idx, start, end, min_duration=min_duration):
             return None
         self.selected_dialogue_row = row_idx
+        self.update_script_row_time_display(row_idx)
         frame = seconds_to_frame(edge_seconds, self.renderer.fps, self.renderer.total_frames)
         self.slider_timeline.set(frame)
         self.update_timecode_and_waveform(frame)
@@ -391,6 +393,7 @@ class WaveformMixin:
         if not dp.update_dialogue_time(row_idx, new_start, new_end):
             return None
         self.selected_dialogue_row = row_idx
+        self.update_script_row_time_display(row_idx)
         frame = seconds_to_frame(new_start, self.renderer.fps, self.renderer.total_frames)
         self.slider_timeline.set(frame)
         self.update_timecode_and_waveform(frame)
@@ -423,6 +426,8 @@ class WaveformMixin:
             self.waveform_drag_handle = handle
             self._waveform_drag_mode = "handle"
             self.selected_dialogue_row = handle["row_idx"]
+            self.update_script_selection_styles()
+            self._scroll_to_selected_row()
             self.waveform_canvas.configure(cursor="sb_h_double_arrow")
             frame = self.update_waveform_time_handle(event.x)
             if frame is not None and self.audio_scrub_var.get():
@@ -435,17 +440,13 @@ class WaveformMixin:
             self._waveform_undo_pushed = True
             self.waveform_drag_handle = range_hit
             self._waveform_drag_mode = "range"
-            self.selected_dialogue_row = range_hit["row_idx"]
+            self.select_dialogue_row(range_hit["row_idx"], seek=True)
             self._waveform_range_drag_start = {
                 "mouse_seconds": self._seconds_from_waveform_x(event.x),
                 "start": range_hit["start"],
                 "end": range_hit["end"],
             }
             self.waveform_canvas.configure(cursor="fleur")
-            self.seek_to_frame(
-                seconds_to_frame(range_hit["start"], self.renderer.fps, self.renderer.total_frames),
-                play_sound=False,
-            )
             return
         self._waveform_drag_mode = None
         self.seek_to_frame(self._frame_from_waveform_x(event.x), play_sound=False)
@@ -480,7 +481,9 @@ class WaveformMixin:
         self._waveform_undo_pushed = False
         self.waveform_canvas.configure(cursor="")
         self.renderer.bubble_cache.clear()
-        self.refresh_script_panel()
+        self.update_script_selection_styles()
+        self._scroll_to_selected_row()
+        self.update_current_sentence_label()
         if frame is not None and self.audio_scrub_var.get():
             self.play_audio_preview(frame, duration=0.35, force=True)
 

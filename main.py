@@ -20,6 +20,11 @@ try:
     _nvidia_dir = os.path.join(os.path.dirname(_torch_lib), "nvidia")
     if os.path.exists(_nvidia_dir):
         for _folder in os.listdir(_nvidia_dir):
+            # Skip cudnn — torch already bundles its own cuDNN in torch/lib.
+            # Adding the pip nvidia-cudnn-cu12 bin dir causes DLL version mismatch
+            # (cudnn64_9.dll filename is shared; sub-libraries end up from different versions).
+            if _folder == "cudnn":
+                continue
             _bin = os.path.join(_nvidia_dir, _folder, "bin")
             if os.path.exists(_bin) and _bin not in os.environ.get("PATH", ""):
                 os.environ["PATH"] = _bin + os.pathsep + os.environ["PATH"]

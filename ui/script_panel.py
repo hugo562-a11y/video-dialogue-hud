@@ -105,7 +105,7 @@ class ScriptPanelMixin:
                     font=strike_font,
                 ).grid(row=1, column=0, columnspan=3, sticky="ew", padx=6, pady=(2, 6))
                 line.bind("<Button-1>", lambda _e, idx=row_idx: self.select_dialogue_row(idx, seek=True))
-                self.script_row_widgets[row_idx] = {"frame": line, "text": None, "speaker": None, "deleted_layout": True}
+                self.script_row_widgets[row_idx] = {"frame": line, "time": time_btn, "text": None, "speaker": None, "deleted_layout": True}
                 continue
 
             if is_silence:
@@ -121,7 +121,7 @@ class ScriptPanelMixin:
                     command=lambda idx=row_idx: self.delete_dialogue_from_panel(idx),
                 ).grid(row=0, column=2, padx=(4, 6), pady=4, sticky="e")
                 line.bind("<Button-1>", lambda _e, idx=row_idx: self.select_dialogue_row(idx, seek=True))
-                self.script_row_widgets[row_idx] = {"frame": line, "text": None, "speaker": None, "deleted_layout": False}
+                self.script_row_widgets[row_idx] = {"frame": line, "time": time_btn, "text": None, "speaker": None, "deleted_layout": False}
                 continue
 
             # ---- 一般對話行 ----
@@ -167,6 +167,7 @@ class ScriptPanelMixin:
 
             self.script_row_widgets[row_idx] = {
                 "frame": line,
+                "time": time_btn,
                 "text": text_entry,
                 "speaker": speaker_var,
                 "delete_button": delete_btn,
@@ -289,6 +290,43 @@ class ScriptPanelMixin:
         except Exception:
             pass
 
+    def _focus_waveform_on_dialogue(self, row_idx, start=None, end=None):
+        if start is None or end is None:
+            dp = self.renderer.data_processor
+            time_col, _, _ = dp.get_columns()
+            if time_col is None or row_idx not in dp.df.index:
+                return
+            start, end = parse_time_range(dp.df.at[row_idx, time_col])
+        if start is None or end is None or not hasattr(self, "get_waveform_timeline_duration"):
+            return
+        duration = self.get_waveform_timeline_duration()
+        if duration <= 0:
+            return
+        view_start, view_end = self.get_waveform_view_range()
+        span = max(0.5, view_end - view_start)
+        margin = min(0.5, span * 0.12)
+        if start >= view_start + margin and end <= view_end - margin:
+            return
+        center = (start + end) / 2
+        new_start = max(0.0, min(duration - span, center - span / 2))
+        self.waveform_view_start = new_start
+        self.waveform_view_end = new_start + span
+
+    def update_script_row_time_display(self, row_idx):
+        widgets = getattr(self, "script_row_widgets", {}).get(row_idx)
+        if not widgets:
+            return
+        time_btn = widgets.get("time")
+        if time_btn is None or not time_btn.winfo_exists():
+            return
+        dp = self.renderer.data_processor
+        time_col, _, _ = dp.get_columns()
+        if time_col is None or row_idx not in dp.df.index:
+            return
+        value = dp.df.at[row_idx, time_col]
+        time_text = "" if pd.isna(value) else str(value).strip()
+        time_btn.configure(text=time_text or "--:--")
+
     # ------------------------------------------------------------------ 當前句顯示
     def update_current_sentence_label(self):
         if not hasattr(self, "current_sentence_label"):
@@ -337,7 +375,7 @@ class ScriptPanelMixin:
         if not dp.has_data() or row_idx is None or row_idx not in dp.df.index:
             return
         time_col, _, _ = dp.get_columns()
-        start, _ = parse_time_range(dp.df.at[row_idx, time_col]) if time_col is not None else (None, None)
+        start, end = parse_time_range(dp.df.at[row_idx, time_col]) if time_col is not None else (None, None)
         self.selected_dialogue_row = row_idx
         speaker, text = dp.get_dialogue_row_values(row_idx)
         matched_tid = next((tid for tid, name in self.renderer.yolo_id_to_speaker.items() if name == speaker), None)
@@ -353,6 +391,7 @@ class ScriptPanelMixin:
         self.update_current_sentence_label()
         self.refresh_script_action_buttons()
         if seek and start is not None and self.renderer.total_frames:
+            self._focus_waveform_on_dialogue(row_idx, start, end)
             # +0.05s 避免浮點取整落在對話起始幀前一格
             frame = seconds_to_frame(start + 0.05, self.renderer.fps, self.renderer.total_frames)
             self.stop_preview_playback()

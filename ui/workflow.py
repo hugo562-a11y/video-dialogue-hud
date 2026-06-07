@@ -1,4 +1,4 @@
-"""WorkflowMixin — 影片選取、腳本載入/儲存、聲音辨識、掃描、匯出。"""
+"""Workflow mixin for video loading, speech recognition, scanning, and export."""
 from __future__ import annotations
 
 import os
@@ -12,7 +12,7 @@ import customtkinter as ctk
 import numpy as np
 import pandas as pd
 from PIL import Image
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 
 from core.constants import (
     APP_TITLE, MIN_SILENCE_SECONDS, SILENCE_SPEAKER, SILENCE_TEXT,
@@ -31,17 +31,40 @@ from core.utils import (
 
 class WorkflowMixin:
 
+    def set_workflow_stage(self, stage: str, message: str = ""):
+        labels = getattr(self, "workflow_group_labels", {})
+        order = ["import", "speech", "people", "export"]
+        active_index = order.index(stage) if stage in order else -1
+        for index, key in enumerate(order):
+            label = labels.get(key)
+            if not label:
+                continue
+            if index < active_index:
+                color = "#43E2A8"
+            elif index == active_index:
+                color = "#FBBF24"
+            else:
+                color = "#AAB0C0"
+            label.configure(text_color=color)
+        if message and hasattr(self, "status_label"):
+            self.status_label.configure(text=message)
+
     # ------------------------------------------------------------------ 影片
     def select_video(self):
         self.stop_preview_playback()
         path = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv")])
         if not path:
             return
-        self.renderer.video_path = path
+        self.renderer.source_video_path = path
+        self.renderer.video_path = None
         self.renderer.data_processor = DataProcessor()
         self.renderer.tracking_data = {}
         self.renderer.set_cut_ranges([])
         self.renderer.person_rois = []
+        self.renderer.yolo_id_to_speaker = {}
+        self.renderer.expected_people_count = 1
+        self._speech_segments = None
+        self._speech_audio_path = None
         self._clear_waveform_audio_cache()
         self.undo_stack.clear()
         self.redo_stack.clear()
@@ -57,6 +80,8 @@ class WorkflowMixin:
         self.people_count_confirmed = False
         if hasattr(self, "btn_export"):
             self.btn_export.configure(state="disabled")
+        if hasattr(self, "btn_export_preview"):
+            self.btn_export_preview.configure(state="disabled")
         if hasattr(self, "btn_open_export"):
             self._last_export_path = ""
             self.btn_open_export.configure(state="disabled", text="開啟輸出影片")
@@ -64,22 +89,112 @@ class WorkflowMixin:
             self.btn_scan.configure(state="disabled")
         if hasattr(self, "btn_speech"):
             self.btn_speech.configure(state="disabled")
+        if hasattr(self, "btn_name_people"):
+            self.btn_name_people.configure(state="disabled")
         if hasattr(self, "btn_load_data"):
             self.btn_load_data.configure(state="disabled")
         if hasattr(self, "btn_save_data"):
             self.btn_save_data.configure(state="disabled")
         if hasattr(self, "whisper_menu"):
             self.whisper_menu.configure(state="disabled")
-        self.btn_draw_people.configure(state="normal")
-        self.btn_confirm_people.configure(state="normal")
+        self.btn_draw_people.configure(state="disabled")
+        self.btn_confirm_people.configure(state="disabled")
         self.btn_clear_people.configure(state="disabled")
         self.progress_bar.set(0)
+        self.set_workflow_stage("import", "正在建立或載入 720 proxy。")
+        self.set_workflow_stage("import", "正在建立或載入 720 proxy。")
+        self._proxy_source_pending = path
+        self._cleanup_proxy_video()
         self.log(f"已選擇影片：{os.path.basename(path)}")
+        self.log("正在建立或載入 720 proxy，讓預覽與時間軸更順。")
+        threading.Thread(target=self._prepare_proxy_video, args=(path,), daemon=True).start()
+        return
+    def _prepare_proxy_video(self, source_path: str):
+        try:
+            proxy_path = self._build_proxy_video(source_path)
+            self.ui_queue.put({"type": "proxy_done", "source_path": source_path, "proxy_path": proxy_path})
+        except Exception as exc:
+            self.ui_queue.put({"type": "error", "text": f"Proxy video creation failed: {exc}"})
 
-        safe_path = get_safe_path(path)
+    def _build_proxy_video(self, source_path: str) -> str:
+        proxy_path = self._proxy_path_for_source(source_path)
+        if self._is_proxy_current(source_path, proxy_path):
+            self.ui_queue.put({"type": "error_log", "text": f"Using existing proxy: {os.path.basename(proxy_path)}"})
+            return proxy_path
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg was not found.")
+        safe_source = get_safe_path(source_path)
+        temp_proxy_path = proxy_path + ".tmp.mp4"
+        # Normalize non-square pixels first, then create a square-pixel working file.
+        # Landscape is capped at 1280x720; portrait is capped at 720x1280.
+        vf = (
+            "scale='trunc(iw*sar/2)*2':ih,"
+            "setsar=1,"
+            "scale='if(gte(iw,ih),min(1280,iw),min(720,iw))':-2,"
+            "setsar=1"
+        )
+        cmd = [
+            ffmpeg, "-y", "-v", "error",
+            "-i", safe_source,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", vf,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            "-c:a", "aac", "-b:a", "128k",
+            temp_proxy_path,
+        ]
+        startupinfo = None
+        if os.name == "nt":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo)
+        if result.returncode != 0 or not os.path.exists(temp_proxy_path):
+            try:
+                if os.path.exists(temp_proxy_path):
+                    os.remove(temp_proxy_path)
+            except OSError:
+                pass
+            detail = result.stderr.decode("utf-8", errors="ignore").strip().splitlines()
+            raise RuntimeError(detail[-1] if detail else "ffmpeg returned no output.")
+        os.replace(temp_proxy_path, proxy_path)
+        return proxy_path
+
+    def _proxy_path_for_source(self, source_path: str) -> str:
+        root, _ext = os.path.splitext(source_path)
+        return root + "_hud_proxy.mp4"
+
+    def _is_proxy_current(self, source_path: str, proxy_path: str) -> bool:
+        if not os.path.exists(proxy_path):
+            return False
+        try:
+            if os.path.getmtime(proxy_path) < os.path.getmtime(source_path):
+                return False
+            cap = cv2.VideoCapture(get_safe_path(proxy_path))
+            ok = cap.isOpened()
+            if ok:
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+                frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                ok = frames > 0 and max(width, height) <= 1280 and min(width, height) <= 720
+            cap.release()
+            return ok
+        except OSError:
+            return False
+
+    def on_proxy_done(self, source_path: str, proxy_path: str):
+        if getattr(self, "_proxy_source_pending", None) != source_path:
+            return
+        self._proxy_source_pending = None
+        self._proxy_video_path = proxy_path
+        self.renderer.source_video_path = source_path
+        self.renderer.video_path = proxy_path
+
+        safe_path = get_safe_path(proxy_path)
         cap = cv2.VideoCapture(safe_path)
         if not cap.isOpened():
-            messagebox.showerror(APP_TITLE, "影片無法讀取。")
+            messagebox.showerror(APP_TITLE, "Proxy 影片無法開啟。")
             return
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -95,71 +210,81 @@ class WorkflowMixin:
         if ret:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             self.set_preview_image(Image.fromarray(self.renderer._resize_preview(rgb)), reset_view=True)
-        self.log(f"影片資訊：{width}x{height}，{total_frames} frames。請框選要追蹤的人。")
+        self.set_workflow_stage("speech", "代理檔完成，正在辨識聲音並產生腳本。")
+        self.log(f"Proxy 完成：{width}x{height}，{total_frames} frames")
         threading.Thread(target=self._generate_waveform, daemon=True).start()
+        self.generate_speech_script()
 
-    # ------------------------------------------------------------------ 人物框
+    def _cleanup_proxy_video(self):
+        self._proxy_video_path = None
+
+    # ------------------------------------------------------------------ Person boxes
     def start_person_box_mode(self):
         if not self.renderer.video_path:
             messagebox.showinfo(APP_TITLE, "請先選擇影片。")
             return
         self._canvas_mode = "person_roi"
-        self.btn_draw_people.configure(text="拖曳框選中", fg_color="#B94A48")
-        self.log("請在預覽畫面拖曳框住每一個要追蹤的人。每畫一框就是一個人。")
-
+        self.btn_draw_people.configure(text="框選中...", fg_color="#B94A48")
+        self.log("請在預覽畫面框選人物。")
     def confirm_people_count(self):
         if not self.renderer.person_rois:
-            messagebox.showinfo(APP_TITLE, "請先在預覽畫面框選至少一個人物。")
+            messagebox.showinfo(APP_TITLE, "請先框選人物。")
             return
         self.renderer.expected_people_count = len(self.renderer.person_rois)
         for idx in range(1, self.renderer.expected_people_count + 1):
             self.renderer.yolo_id_to_speaker.setdefault(idx, f"人物 {idx}")
-        self.people_count_confirmed = True
-        if hasattr(self, "btn_speech"):
-            self.btn_speech.configure(state="normal")
-        if hasattr(self, "whisper_menu"):
-            self.whisper_menu.configure(state="normal")
-        if hasattr(self, "btn_load_data"):
-            self.btn_load_data.configure(state="normal")
+        self._update_box_and_scan_state()
+        self.log(f"已確認 {self.renderer.expected_people_count} 個人物框。")
+
+    def _update_box_and_scan_state(self):
+        self.renderer.expected_people_count = max(1, len(self.renderer.person_rois))
         if hasattr(self, "btn_scan"):
-            self.btn_scan.configure(state="normal" if self.renderer.data_processor.has_data() else "disabled")
-        self.log(f"已確認 {self.renderer.expected_people_count} 個人物框。請載入或辨識腳本，再掃描人物。")
+            self.btn_scan.configure(
+                state="normal" if self.renderer.person_rois and self.renderer.data_processor.has_data() else "disabled"
+            )
+        if hasattr(self, "btn_clear_people"):
+            self.btn_clear_people.configure(state="normal" if self.renderer.person_rois else "disabled")
+        if hasattr(self, "btn_confirm_people"):
+            self.btn_confirm_people.configure(state="normal" if self.renderer.person_rois else "disabled")
+        if hasattr(self, "btn_name_people"):
+            self.btn_name_people.configure(state="normal")
+        self.renderer.tracking_data = {}
+        self.renderer.yolo_id_to_speaker = dict(self.renderer.yolo_id_to_speaker)
 
     def mark_people_count_unconfirmed(self):
         if not self.renderer.video_path:
             return
-        self.people_count_confirmed = False
-        self.renderer.tracking_data = {}
-        if hasattr(self, "btn_speech"):
-            self.btn_speech.configure(state="disabled")
-        if hasattr(self, "whisper_menu"):
-            self.whisper_menu.configure(state="disabled")
-        if hasattr(self, "btn_load_data"):
-            self.btn_load_data.configure(state="disabled")
+        self.renderer.expected_people_count = max(1, len(self.renderer.person_rois))
         if hasattr(self, "btn_scan"):
-            self.btn_scan.configure(state="disabled")
-        self.btn_export.configure(state="disabled")
-        self.btn_confirm_people.configure(state="normal")
-        self.log("人物框已變更，請重新確認後再繼續。")
+            self.btn_scan.configure(
+                state="normal" if self.renderer.person_rois and self.renderer.data_processor.has_data() else "disabled"
+            )
+        if hasattr(self, "btn_export"):
+            self.btn_export.configure(state="disabled")
+        if hasattr(self, "btn_confirm_people"):
+            self.btn_confirm_people.configure(state="normal" if self.renderer.person_rois else "disabled")
+        if hasattr(self, "btn_name_people"):
+            self.btn_name_people.configure(state="normal")
+        self.renderer.tracking_data = {}
+        self.log("人物框已變更，請重新確認或掃描。")
 
     def clear_person_boxes(self):
         self.renderer.person_rois = []
         self.preview_boxes = []
-        self.people_count_confirmed = False
+        self.renderer.expected_people_count = 1
         self.renderer.tracking_data = {}
-        self.btn_confirm_people.configure(state="normal" if self.renderer.video_path else "disabled")
         self.btn_clear_people.configure(state="disabled")
-        self.btn_speech.configure(state="disabled")
-        self.whisper_menu.configure(state="disabled")
-        self.btn_load_data.configure(state="disabled")
+        self.btn_speech.configure(state="normal")
+        self.whisper_menu.configure(state="normal")
+        self.btn_load_data.configure(state="normal" if self.renderer.data_processor.has_data() else "disabled")
         self.btn_scan.configure(state="disabled")
         self.btn_export.configure(state="disabled")
         self._refresh_canvas()
-        self.log("已清除人物框，請重新框選。")
+        self.log("已清除人物框。")
 
     def use_current_boxes_as_rois(self):
         if not self.preview_boxes:
-            messagebox.showinfo(APP_TITLE, "目前畫面沒有可用的人物框。請先掃描或框選人物。")
+            messagebox.showinfo(APP_TITLE, "目前畫面沒有可用人物框。")
             return
         rois = []
         for box in sorted(self.preview_boxes, key=lambda b: b["id"]):
@@ -176,7 +301,7 @@ class WorkflowMixin:
         self.mark_people_count_unconfirmed()
         self.btn_clear_people.configure(state="normal")
         self._refresh_canvas()
-        self.log(f"已用目前畫面更新 {len(rois)} 個人物框，請重新確認並掃描。")
+        self.log(f"已用目前畫面更新 {len(rois)} 個人物框。")
 
     # ------------------------------------------------------------------ 腳本
     def load_data(self):
@@ -191,18 +316,18 @@ class WorkflowMixin:
                 self.get_video_duration(), self.get_silence_seconds()
             )
             if added:
-                message += f"，已補 {added} 段無講話"
+                message += f"，已加入 {added} 段無講話"
         self.log(message)
         if success:
-            self.btn_scan.configure(state="normal" if self.people_count_confirmed else "disabled")
+            self.btn_scan.configure(state="normal" if self.renderer.person_rois else "disabled")
             self.btn_save_data.configure(state="normal")
             self.refresh_script_panel()
             speakers = self.renderer.data_processor.get_unique_speakers()
             if speakers:
                 self.entry_speaker.delete(0, "end")
                 self.entry_speaker.insert(0, speakers[0])
-                self.log(f"找到說話者：{', '.join(speakers[:8])}")
-            # 開放滑桿，讓使用者拖動預覽字幕泡泡（掃描前字幕模式）
+                self.log(f"偵測到說話者：{', '.join(speakers[:8])}")
+            # Enable timeline preview once script data is available.
             if self.renderer.total_frames and not self.renderer.tracking_data:
                 self.slider_timeline.configure(state="normal", from_=1, to=self.renderer.total_frames)
                 self.slider_timeline.set(1)
@@ -214,8 +339,9 @@ class WorkflowMixin:
             messagebox.showinfo(APP_TITLE, "目前沒有腳本可儲存。")
             return
         default_name = ""
-        if self.renderer.video_path:
-            base = os.path.splitext(self.renderer.video_path)[0]
+        video_base_path = getattr(self.renderer, "source_video_path", None) or self.renderer.video_path
+        if video_base_path:
+            base = os.path.splitext(video_base_path)[0]
             default_name = available_output_path(base + "_dialogue.csv")
         elif dp.path and os.path.isfile(str(dp.path)):
             default_name = dp.path
@@ -238,7 +364,7 @@ class WorkflowMixin:
         except Exception as exc:
             messagebox.showerror(APP_TITLE, f"儲存失敗：{exc}")
 
-    # ------------------------------------------------------------------ 工具
+    # ------------------------------------------------------------------ 基本資訊
     def get_video_duration(self):
         if self.renderer.total_frames and self.renderer.fps:
             return self.renderer.total_frames / max(self.renderer.fps, 1)
@@ -255,15 +381,17 @@ class WorkflowMixin:
         if not self.renderer.video_path:
             messagebox.showinfo(APP_TITLE, "請先選擇影片。")
             return
-        if not self.people_count_confirmed:
-            messagebox.showinfo(APP_TITLE, "請先框選人物並確認框選。")
-            return
+        self.renderer.expected_people_count = max(1, len(self.renderer.person_rois))
+        if self.renderer.expected_people_count == 1 and 1 not in self.renderer.yolo_id_to_speaker:
+            self.renderer.yolo_id_to_speaker[1] = "人物 1"
         self.btn_speech.configure(state="disabled", text="辨識中...")
+        if hasattr(self, "btn_name_people"):
+            self.btn_name_people.configure(state="disabled")
         if hasattr(self, "btn_load_data"):
             self.btn_load_data.configure(state="disabled")
         self.whisper_menu.configure(state="disabled")
         self.progress_bar.set(0)
-        self.log("開始辨識聲音。會產生可編輯腳本，完成後再對人物。")
+        self.log("開始辨識聲音。")
         threading.Thread(target=self._run_speech_task, daemon=True).start()
 
     def _run_speech_task(self):
@@ -282,12 +410,12 @@ class WorkflowMixin:
 
             from faster_whisper import WhisperModel
 
-            safe_path = get_safe_path(self.renderer.video_path)
+            audio_source_path = getattr(self.renderer, "source_video_path", None) or self.renderer.video_path
+            safe_path = get_safe_path(audio_source_path)
             model_size = self.whisper_model_var.get()
             self.ui_queue.put({"type": "progress", "value": 0.05})
             try:
-                # 把 model 存成 instance variable，避免 thread 結束後被 GC 釋放，
-                # 導致 faster_whisper 內部的 tqdm monitor thread 存取已釋放記憶體而 abort。
+                # Keep the Whisper model cached so repeated recognition does not reload it.
                 cached = getattr(self, "_whisper_model", None)
                 cached_size = getattr(self, "_whisper_model_size", None)
                 if cached is None or cached_size != model_size:
@@ -303,19 +431,21 @@ class WorkflowMixin:
                     vad_parameters={"min_silence_duration_ms": int(self.get_silence_seconds() * 1000)},
                     condition_on_previous_text=False,
                 )
+                self._speech_segments = list(segments)
+                self._speech_audio_path = safe_path
                 rows = self._segments_to_rows(
-                    list(segments),
+                    self._speech_segments,
                     self.renderer.total_frames,
                     self.renderer.fps,
                     self.get_silence_seconds(),
-                    safe_path,
+                    self._speech_audio_path,
                     model,
                 )
             except RuntimeError as exc:
                 if "cublas" not in str(exc).lower() and "cuda" not in str(exc).lower():
                     raise
                 self.ui_queue.put({"type": "progress", "value": 0.1})
-                self.ui_queue.put({"type": "error_log", "text": "CUDA 無法使用，已自動改用 CPU 辨識。"})
+                self.ui_queue.put({"type": "error_log", "text": "CUDA 執行失敗，已改用 CPU。"})
                 self._whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
                 self._whisper_model_size = model_size
                 model = self._whisper_model
@@ -328,26 +458,29 @@ class WorkflowMixin:
                     vad_parameters={"min_silence_duration_ms": int(self.get_silence_seconds() * 1000)},
                     condition_on_previous_text=False,
                 )
+                self._speech_segments = list(segments)
+                self._speech_audio_path = safe_path
                 rows = self._segments_to_rows(
-                    list(segments),
+                    self._speech_segments,
                     self.renderer.total_frames,
                     self.renderer.fps,
                     self.get_silence_seconds(),
-                    safe_path,
+                    self._speech_audio_path,
                     model,
                 )
 
             if not rows:
-                self.ui_queue.put({"type": "error", "text": "沒有辨識到可用的語音內容。"})
+                self.ui_queue.put({"type": "error", "text": "語音辨識沒有產生可用腳本。"})
                 return
 
-            base = os.path.splitext(self.renderer.video_path)[0]
+            video_base_path = getattr(self.renderer, "source_video_path", None) or self.renderer.video_path
+            base = os.path.splitext(video_base_path)[0]
             out_csv = available_output_path(base + "_dialogue.csv")
             pd.DataFrame(rows).to_csv(out_csv, index=False, encoding="utf-8-sig")
             self.ui_queue.put({"type": "speech_done", "rows": rows, "out_csv": out_csv})
         except ModuleNotFoundError as exc:
             if exc.name == "faster_whisper":
-                self.ui_queue.put({"type": "error", "text": "缺少 faster-whisper。請先安裝：pip install faster-whisper"})
+                self.ui_queue.put({"type": "error", "text": "缺少 faster-whisper，請先安裝。"})
             else:
                 self.ui_queue.put({"type": "error", "text": f"缺少套件：{exc.name}"})
         except Exception as exc:
@@ -355,25 +488,40 @@ class WorkflowMixin:
 
     def on_speech_done(self, rows, out_csv):
         if hasattr(self, "btn_speech"):
-            self.btn_speech.configure(state="normal", text="4  重新辨識聲音")
+            self.btn_speech.configure(state="normal", text="2  重新辨識聲音")
+        if hasattr(self, "btn_name_people"):
+            self.btn_name_people.configure(state="normal")
         if hasattr(self, "btn_load_data"):
             self.btn_load_data.configure(state="normal")
         if hasattr(self, "whisper_menu"):
             self.whisper_menu.configure(state="normal")
+        if hasattr(self, "btn_draw_people"):
+            self.btn_draw_people.configure(state="normal")
+        if hasattr(self, "btn_confirm_people"):
+            self.btn_confirm_people.configure(state="normal" if self.renderer.person_rois else "disabled")
+        if hasattr(self, "btn_clear_people"):
+            self.btn_clear_people.configure(state="normal" if self.renderer.person_rois else "disabled")
         if hasattr(self, "btn_scan"):
-            self.btn_scan.configure(state="normal" if self.people_count_confirmed else "disabled")
+            self.btn_scan.configure(state="normal" if self.renderer.person_rois else "disabled")
+        if hasattr(self, "btn_name_people"):
+            self.btn_name_people.configure(state="normal")
         if hasattr(self, "btn_save_data"):
             self.btn_save_data.configure(state="normal")
         self.progress_bar.set(1)
+        self.set_workflow_stage("people", "腳本已建立。先修正時間，再命名人物並框選。")
+        self.btn_speech.configure(text="重新辨識聲音")
+        self.btn_scan.configure(text="掃描人物")
+        self.btn_export.configure(text="匯出完成品")
         silence_count = sum(1 for row in rows if row.get("說話者") == SILENCE_SPEAKER)
         df = pd.DataFrame(rows)
         self.renderer.data_processor.set_dataframe(df, os.path.basename(out_csv))
         self.selected_dialogue_row = 0 if len(df) else None
         self.refresh_script_panel()
-        self.log(f"語音辨識完成，已產生腳本：{os.path.basename(out_csv)}，無講話 {silence_count} 段")
+        self.log(f"語音腳本已建立：{os.path.basename(out_csv)}，無講話 {silence_count} 段")
+        self.log("接著會進行聲紋辨識並開啟人物命名。")
         ids = list(range(1, max(1, self.renderer.expected_people_count) + 1))
         self.open_speaker_mapper(ids)
-        # 腳本載入後開放滑桿，讓使用者拖動預覽字幕泡泡（掃描前字幕模式）
+            # Enable timeline preview once script data is available.
         if self.renderer.total_frames:
             self.slider_timeline.configure(state="normal", from_=1, to=self.renderer.total_frames)
             self.slider_timeline.set(1)
@@ -381,40 +529,51 @@ class WorkflowMixin:
 
     def on_worker_error(self, text):
         if hasattr(self, "btn_speech"):
-            self.btn_speech.configure(state="normal", text="4  辨識聲音")
+            self.btn_speech.configure(state="normal", text="2  辨識聲音")
         if hasattr(self, "btn_load_data"):
             self.btn_load_data.configure(state="normal")
         if hasattr(self, "whisper_menu"):
             self.whisper_menu.configure(state="normal")
+        if hasattr(self, "btn_draw_people"):
+            self.btn_draw_people.configure(state="normal")
+        if hasattr(self, "btn_confirm_people"):
+            self.btn_confirm_people.configure(state="normal" if self.renderer.person_rois else "disabled")
+        if hasattr(self, "btn_clear_people"):
+            self.btn_clear_people.configure(state="normal" if self.renderer.person_rois else "disabled")
         self.btn_scan.configure(
-            state="normal" if self.renderer.data_processor.has_data() else "disabled",
+            state="normal" if self.renderer.data_processor.has_data() and self.renderer.person_rois else "disabled",
             text="5  掃描人物",
         )
+        if hasattr(self, "btn_name_people"):
+            self.btn_name_people.configure(state="normal" if self.renderer.data_processor.has_data() else "disabled")
         self.btn_export.configure(
             state="normal" if self.renderer.tracking_data else "disabled",
-            text="6  匯出影片",
+            text="6  匯出完成品",
         )
         self.log(text)
         messagebox.showerror(APP_TITLE, text)
 
     # ------------------------------------------------------------------ 掃描
     def start_preview_scan(self):
+        self.set_workflow_stage("people", "正在掃描人物，請稍候。")
         self.stop_preview_playback()
         if not self.renderer.video_path:
             messagebox.showinfo(APP_TITLE, "請先選擇影片。")
             return
-        if not self.people_count_confirmed:
-            messagebox.showinfo(APP_TITLE, "請先框選人物並確認框選。")
+        if not self.renderer.person_rois:
+            messagebox.showinfo(APP_TITLE, "請先框選人物。")
             return
         if not self.renderer.data_processor.has_data():
-            messagebox.showinfo(APP_TITLE, "請先辨識聲音產生腳本，或載入既有腳本。")
+            messagebox.showinfo(APP_TITLE, "請先建立或載入腳本。")
             return
         self.renderer.expected_people_count = len(self.renderer.person_rois)
         self.btn_scan.configure(state="disabled", text="掃描中...")
+        if hasattr(self, "btn_export_preview"):
+            self.btn_export_preview.configure(state="disabled")
         self.btn_export.configure(state="disabled")
         self.slider_timeline.configure(state="disabled")
         self.progress_bar.set(0)
-        self.log("開始掃描人物。第一次執行會載入 YOLO 模型，請稍等。")
+        self.log("開始掃描人物。")
         threading.Thread(target=self.renderer.scan_video, daemon=True).start()
 
     def on_scan_finished(self):
@@ -422,14 +581,19 @@ class WorkflowMixin:
         if self.renderer.tracking_data:
             self.slider_timeline.configure(state="normal", from_=1, to=max(1, self.renderer.total_frames))
             self.slider_timeline.set(1)
+            if hasattr(self, "btn_export_preview"):
+                self.btn_export_preview.configure(state="normal")
             self.btn_export.configure(state="normal")
+            self.set_workflow_stage("export", "人物掃描完成。抽查字幕與泡泡位置，確認後匯出。")
+            self.btn_scan.configure(text="重新掃描人物")
+            self.btn_export.configure(text="匯出完成品")
             first_frame = next((idx for idx, boxes in self.renderer.tracking_data.items() if boxes), 1)
             self.slider_timeline.set(first_frame)
             self.on_timeline_scrub(first_frame)
             ids = sorted({box["id"] for boxes in self.renderer.tracking_data.values() for box in boxes})
-            self.log(f"掃描完成，找到 ID：{', '.join(map(str, ids)) if ids else '無'}")
+            self.log(f"掃描完成，偵測 ID：{', '.join(map(str, ids)) if ids else '無'}")
         else:
-            self.log("掃描完成，但沒有找到人物。")
+            self.log("掃描完成，但沒有偵測到人物。")
 
     # ------------------------------------------------------------------ 匯出
     def _sync_selected_person_fields(self):
@@ -442,7 +606,18 @@ class WorkflowMixin:
             self.renderer.yolo_id_to_speaker[tid] = speaker
         self.update_dialogue_text()
 
-    def start_export(self):
+    def _delete_preview_export(self):
+        path = getattr(self, "_last_preview_export_path", "")
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+                self.log(f"已刪除預覽影片：{path}")
+            except OSError as exc:
+                self.log(f"預覽影片刪除失敗：{exc}")
+        self._last_preview_export_path = ""
+
+    def start_preview_export(self):
+        self.set_workflow_stage("export", "正在匯出 720 proxy 預覽影片。")
         self.stop_preview_playback()
         if not self.renderer.tracking_data:
             messagebox.showinfo(APP_TITLE, "請先掃描人物。")
@@ -452,53 +627,101 @@ class WorkflowMixin:
             self.renderer.data_processor.get_export_cut_ranges(self.get_video_duration())
         )
         self.stop_audio_preview()
+        self._exporting_preview = True
+        self.btn_export_preview.configure(state="disabled", text="預覽匯出中...")
+        self.btn_export.configure(state="disabled")
+        self.btn_scan.configure(state="disabled")
+        self.slider_timeline.configure(state="disabled")
+        self.progress_bar.set(0)
+        self.log("開始匯出預覽影片。")
+        threading.Thread(target=lambda: self.renderer.export_video(preview=True), daemon=True).start()
+
+    def start_export(self):
+        self.set_workflow_stage("export", "正在以原始影片尺寸匯出完成品。")
+        self.stop_preview_playback()
+        if not self.renderer.tracking_data:
+            messagebox.showinfo(APP_TITLE, "請先掃描人物。")
+            return
+        self._delete_preview_export()
+        self._sync_selected_person_fields()
+        self.renderer.set_cut_ranges(
+            self.renderer.data_processor.get_export_cut_ranges(self.get_video_duration())
+        )
+        self.stop_audio_preview()
+        self._exporting_preview = False
+        if hasattr(self, "btn_export_preview"):
+            self.btn_export_preview.configure(state="disabled")
         self.btn_export.configure(state="disabled", text="匯出中...")
         self.btn_scan.configure(state="disabled")
         self.slider_timeline.configure(state="disabled")
         self.progress_bar.set(0)
-        self.log("開始匯出影片。")
-        threading.Thread(target=self.renderer.export_video, daemon=True).start()
+        self.log("開始匯出完成品。")
+        threading.Thread(target=lambda: self.renderer.export_video(preview=False), daemon=True).start()
 
     def on_export_finished(self, out_path):
-        self.btn_export.configure(state="normal", text="6  匯出影片")
-        self.btn_scan.configure(state="normal", text="5  重新掃描人物")
+        is_preview = bool(getattr(self, "_exporting_preview", False))
+        self._exporting_preview = False
+        if is_preview:
+            self.set_workflow_stage("export", "預覽匯出完成，可檢查後再匯出完成品。")
+        else:
+            self.set_workflow_stage("export", "匯出完成。可開啟輸出影片檢查結果。")
+        if hasattr(self, "btn_export_preview"):
+            self.btn_export_preview.configure(state="normal", text="重新匯出預覽")
+        self.btn_export.configure(state="normal", text="重新匯出完成品")
+        self.btn_scan.configure(state="normal", text="重新掃描人物")
         self.slider_timeline.configure(state="normal")
         self.progress_bar.set(1)
         if out_path:
+            if is_preview:
+                self._last_preview_export_path = out_path
             self._last_export_path = out_path
             if hasattr(self, "btn_open_export"):
                 self.btn_open_export.configure(state="normal", text="開啟輸出影片")
             self.log(f"匯出完成：{out_path}")
         else:
-            self.log("匯出未完成。")
+            self.log("匯出失敗。")
 
     def open_export_video(self):
         path = getattr(self, "_last_export_path", "")
         if not path or not os.path.exists(path):
-            messagebox.showinfo(APP_TITLE, "找不到可開啟的輸出影片。")
+            messagebox.showinfo(APP_TITLE, "找不到可開啟的影片。")
             return
         try:
             os.startfile(path)
         except Exception as exc:
-            messagebox.showerror(APP_TITLE, f"無法開啟影片：{exc}")
+            messagebox.showerror(APP_TITLE, f"開啟影片失敗：{exc}")
 
     # ------------------------------------------------------------------ 人物命名
     def open_speaker_mapper(self, ids):
+        ids = list(ids) if ids else [1]
         win = ctk.CTkToplevel(self)
         win.title("命名人物")
-        win.geometry("720x460")
+        win.geometry("720x500")
         win.transient(self)
         win.grab_set()
-        ctk.CTkLabel(
-            win,
-            text="先替每個人物框命名。腳本選單之後會出現這些名字。",
+        header_frame = ctk.CTkFrame(win, fg_color="transparent")
+        header_frame.pack(fill="x", pady=(16, 8), padx=14)
+        self._speaker_mapper_info = ctk.CTkLabel(
+            header_frame,
+            text="確認人物名稱、泡泡顏色、樣式與位置。",
             font=("Microsoft JhengHei UI", 16, "bold"),
-        ).pack(pady=(16, 8))
+            anchor="w",
+        )
+        self._speaker_mapper_info.pack(side="left", fill="x", expand=True)
+        add_person_button = ctk.CTkButton(
+            header_frame,
+            text="新增人物",
+            width=120,
+            command=lambda: add_person(),
+        )
+        add_person_button.pack(side="right")
+
         scroll = ctk.CTkScrollableFrame(win)
         scroll.pack(expand=True, fill="both", padx=14, pady=8)
         rows = []
         color_names = list(BUBBLE_COLOR_OPTIONS.keys())
-        for tid in ids:
+
+        def make_row(tid):
             row = ctk.CTkFrame(scroll)
             row.pack(fill="x", pady=4)
             ctk.CTkLabel(row, text=f"人物 {tid}", width=70, font=("Arial", 13, "bold")).pack(side="left", padx=8, pady=8)
@@ -537,30 +760,106 @@ class WorkflowMixin:
             ).pack(side="left", padx=4)
             rows.append((tid, entry, color_var, style_var, position_var))
 
+        def add_person():
+            next_tid = max([item[0] for item in rows], default=0) + 1
+            make_row(next_tid)
+            self._speaker_mapper_info.configure(
+                text="已新增人物，請設定名稱與樣式。"
+            )
+
+        for tid in ids:
+            make_row(tid)
+
         def save():
-            self.push_undo_state("修改人物名稱")
-            renamed = 0
+            self.push_undo_state("更新人物名稱")
+            self.renderer.expected_people_count = max(len(rows), 1)
+            old_speakers = {
+                tid: self.renderer.yolo_id_to_speaker.get(tid, f"人物 {tid}")
+                for tid, _, _, _, _ in rows
+            }
             for tid, entry, color_var, style_var, position_var in rows:
-                old_speaker = self.renderer.yolo_id_to_speaker.get(tid, f"人物 {tid}")
                 speaker = entry.get().strip()
                 if speaker:
                     self.renderer.yolo_id_to_speaker[tid] = speaker
-                    renamed += self.renderer.data_processor.replace_speaker(old_speaker, speaker)
                 self.renderer.set_person_bubble_style(tid, style_var.get(), color_var.get(), position_var.get())
+            for idx in range(1, self.renderer.expected_people_count + 1):
+                self.renderer.yolo_id_to_speaker.setdefault(idx, f"人物 {idx}")
             self.renderer.bubble_cache.clear()
-            self.log(f"已更新人物名稱，並同步 {renamed} 筆腳本說話者。")
+            if getattr(self, "_speech_segments", None):
+                self.reassign_speech_rows()
+                self.log(f"已依 {self.renderer.expected_people_count} 個人物重新分配聲紋。")
+            else:
+                renamed = 0
+                for tid, entry, _, _, _ in rows:
+                    old_speaker = old_speakers.get(tid, f"人物 {tid}")
+                    speaker = entry.get().strip()
+                    if speaker:
+                        renamed += self.renderer.data_processor.replace_speaker(old_speaker, speaker)
+                self.log(f"已更新腳本中的 {renamed} 筆說話者。")
             self.on_timeline_scrub(self.slider_timeline.get())
             self.refresh_script_panel()
             win.destroy()
 
         ctk.CTkButton(win, text="套用", command=save, height=36).pack(pady=(6, 16))
 
+    def _prompt_person_count(self):
+        if self.renderer.person_rois or self.renderer.expected_people_count != 1:
+            return
+        count = simpledialog.askinteger(
+            APP_TITLE,
+            "請輸入人物數量。",
+            parent=self,
+            minvalue=1,
+            maxvalue=12,
+            initialvalue=2,
+        )
+        if count is None:
+            return
+        self.renderer.expected_people_count = max(1, count)
+        for idx in range(1, self.renderer.expected_people_count + 1):
+            self.renderer.yolo_id_to_speaker.setdefault(idx, f"人物 {idx}")
+        if getattr(self, "_speech_segments", None):
+            self.reassign_speech_rows()
+
+    def open_person_namer(self):
+        ids = list(range(1, max(1, self.renderer.expected_people_count) + 1))
+        self.open_speaker_mapper(ids)
+
+    def reassign_speech_rows(self):
+        if not getattr(self, "_speech_segments", None):
+            return False
+        model = getattr(self, "_whisper_model", None)
+        if model is None:
+            try:
+                from faster_whisper import WhisperModel
+                model_size = self.whisper_model_var.get()
+                self._whisper_model = WhisperModel(model_size, device="auto", compute_type="int8")
+                self._whisper_model_size = model_size
+                model = self._whisper_model
+            except Exception:
+                model = None
+        audio_path = getattr(self, "_speech_audio_path", self.renderer.video_path)
+        rows = self._segments_to_rows(
+            self._speech_segments,
+            self.renderer.total_frames,
+            self.renderer.fps,
+            self.get_silence_seconds(),
+            audio_path,
+            model,
+        )
+        if not rows:
+            return False
+        self.renderer.data_processor.set_dataframe(pd.DataFrame(rows), self.renderer.data_processor.path or "辨識腳本")
+        self.selected_dialogue_row = 0 if len(rows) else None
+        self.refresh_script_panel()
+        return True
+
     def _set_entry(self, entry, value):
         entry.delete(0, "end")
         entry.insert(0, value)
 
     def _bubble_color_hex(self, color_name: str) -> str:
-        rgba, _ = BUBBLE_COLOR_OPTIONS.get(color_name, BUBBLE_COLOR_OPTIONS["藍"])
+        rgba, _ = BUBBLE_COLOR_OPTIONS.get(color_name, next(iter(BUBBLE_COLOR_OPTIONS.values())))
         return "#{:02X}{:02X}{:02X}".format(rgba[0], rgba[1], rgba[2])
 
     # ------------------------------------------------------------------ 語音辨識輔助
@@ -742,22 +1041,20 @@ class WorkflowMixin:
                 pass
 
     def _assign_speakers_resemblyzer(self, entries, audio, audio_rate, n_speakers):
-        """用 resemblyzer 對每個 entry 計算聲紋 embedding，再以 KMeans 分配說話者。
-        回傳 0-based speaker index list，長度與 entries 相同。
-        任何例外都靜默處理並回傳全 0。"""
+        """Assign each speech entry to a speaker cluster with resemblyzer embeddings."""
         if n_speakers <= 1 or not entries or audio is None:
             return [0] * len(entries)
         try:
             from resemblyzer import VoiceEncoder, preprocess_wav
             from sklearn.cluster import KMeans
 
-            # 懶載入 encoder，存成 instance variable 避免重複下載模型
+            # Keep the encoder cached because model loading is relatively expensive.
             if not getattr(self, "_voice_encoder", None):
                 self._voice_encoder = VoiceEncoder()
             encoder = self._voice_encoder
 
             embeddings = []
-            min_samples = int(audio_rate * 0.3)  # 低於 0.3s 的片段用零向量
+            min_samples = int(audio_rate * 0.3)
             for entry in entries:
                 s = int(entry["start"] * audio_rate)
                 e = int(entry["end"] * audio_rate)
@@ -770,7 +1067,6 @@ class WorkflowMixin:
                     embeddings.append(emb)
 
             emb_array = np.array(embeddings, dtype=np.float32)
-            # 若所有 embedding 都是零向量（全部太短），直接回傳全 0
             if not np.any(emb_array):
                 return [0] * len(entries)
 
@@ -779,6 +1075,50 @@ class WorkflowMixin:
             return labels.tolist()
         except Exception:
             return [0] * len(entries)
+
+    def _estimate_speaker_count_resemblyzer(self, entries, audio, audio_rate, max_speakers: int = 6) -> int:
+        if len(entries) < 2 or audio is None or audio_rate <= 0:
+            return 1
+        try:
+            from resemblyzer import VoiceEncoder, preprocess_wav
+            from sklearn.cluster import KMeans
+            from sklearn.metrics import silhouette_score
+
+            if not getattr(self, "_voice_encoder", None):
+                self._voice_encoder = VoiceEncoder()
+            encoder = self._voice_encoder
+
+            embeddings = []
+            min_samples = int(audio_rate * 0.45)
+            for entry in entries:
+                s = int(max(0.0, entry["start"]) * audio_rate)
+                e = int(max(entry["start"], entry["end"]) * audio_rate)
+                chunk = audio[s:e]
+                if chunk.size < min_samples:
+                    continue
+                wav = preprocess_wav(chunk.astype(np.float32), source_sr=int(audio_rate))
+                emb = encoder.embed_utterance(wav)
+                if np.any(emb):
+                    embeddings.append(emb)
+
+            if len(embeddings) < 3:
+                return 1
+            emb_array = np.array(embeddings, dtype=np.float32)
+            upper = min(max_speakers, len(embeddings) - 1)
+            best_k = 1
+            best_score = -1.0
+            for k in range(2, upper + 1):
+                labels = KMeans(n_clusters=k, n_init="auto", random_state=42).fit_predict(emb_array)
+                if len(set(labels)) < 2:
+                    continue
+                score = float(silhouette_score(emb_array, labels))
+                if score > best_score:
+                    best_score = score
+                    best_k = k
+            return best_k if best_score >= 0.18 else 1
+        except Exception as exc:
+            self.ui_queue.put({"type": "error_log", "text": f"聲紋估算失敗，先使用 1 個人物：{exc}"})
+            return 1
 
     def _segments_to_rows(self, segments, total_frames=None, fps=None, min_silence=MIN_SILENCE_SECONDS, audio_path=None, model=None):
         audio, audio_rate = self._load_audio_for_timing(audio_path)
@@ -833,7 +1173,7 @@ class WorkflowMixin:
                 entries.extend(recovered)
                 recovered_count += len(recovered)
         if recovered_count:
-            self.ui_queue.put({"type": "error_log", "text": f"已針對漏辨聲音區段補辨識 {recovered_count} 句。"})
+            self.ui_queue.put({"type": "error_log", "text": f"補回 {recovered_count} 段可能漏辨語音。"})
 
         entries = self._calibrate_speech_entries(entries, audio, audio_rate, min_silence)
         entries.sort(key=lambda item: item["start"])
@@ -846,30 +1186,41 @@ class WorkflowMixin:
             if item["end"] - item["start"] >= 0.05:
                 cleaned.append(item)
 
-        # ---- 說話者辨識 ----
+        # ---- 聲紋估算人物數 ----
         n_speakers = max(1, getattr(self.renderer, "expected_people_count", 1) or 1)
+        if not self.renderer.person_rois and n_speakers <= 1:
+            self.ui_queue.put({"type": "error_log", "text": "語音辨識完成，正在進行聲紋估算人物數..."})
+            estimated = self._estimate_speaker_count_resemblyzer(cleaned, audio, audio_rate)
+            if estimated > 1:
+                self.renderer.expected_people_count = estimated
+                n_speakers = estimated
+                for idx in range(1, estimated + 1):
+                    self.renderer.yolo_id_to_speaker.setdefault(idx, f"人物 {idx}")
+                self.ui_queue.put({"type": "error_log", "text": f"聲紋估算為 {estimated} 個人物。"})
+            else:
+                self.ui_queue.put({"type": "error_log", "text": "聲紋估算為 1 個人物。"})
         if n_speakers > 1:
-            self.ui_queue.put({"type": "error_log", "text": f"偵測到 {n_speakers} 人，正在用聲紋辨識分配說話者⋯"})
+            self.ui_queue.put({"type": "error_log", "text": f"正在依 {n_speakers} 個人物做聲紋分群。"})
         speaker_labels = self._assign_speakers_resemblyzer(cleaned, audio, audio_rate, n_speakers)
         if n_speakers > 1 and any(l != 0 for l in speaker_labels):
-            self.ui_queue.put({"type": "error_log", "text": "聲紋辨識完成。"})
+            self.ui_queue.put({"type": "error_log", "text": "聲紋分群完成。"})
 
         rows = []
         last_end = 0.0
         for index, (item, spk_idx) in enumerate(zip(cleaned, speaker_labels), start=1):
             if item["start"] - last_end >= min_silence:
                 rows.append({
-                    "時間點": format_time_range(last_end, item["start"]),
+                    "時間": format_time_range(last_end, item["start"]),
                     "說話者": SILENCE_SPEAKER,
-                    "對話內容": SILENCE_TEXT,
+                    "對話": SILENCE_TEXT,
                 })
-            # spk_idx 是 0-based；yolo_id_to_speaker 是 1-based
+            # spk_idx 是 0-based，yolo_id_to_speaker 是 1-based
             speaker_id = (spk_idx % n_speakers) + 1
             speaker_name = self.renderer.yolo_id_to_speaker.get(speaker_id, f"人物 {speaker_id}")
             rows.append({
-                "時間點": format_time_range(item["start"], item["end"]),
+                "時間": format_time_range(item["start"], item["end"]),
                 "說話者": speaker_name,
-                "對話內容": item["text"],
+                "對話": item["text"],
             })
             last_end = max(last_end, float(item["end"]))
             if index % 3 == 0:
@@ -878,8 +1229,8 @@ class WorkflowMixin:
         video_end = total_frames / max(fps, 1) if total_frames and fps else None
         if video_end and video_end - last_end >= min_silence:
             rows.append({
-                "時間點": format_time_range(last_end, video_end),
+                "時間": format_time_range(last_end, video_end),
                 "說話者": SILENCE_SPEAKER,
-                "對話內容": SILENCE_TEXT,
+                "對話": SILENCE_TEXT,
             })
         return rows

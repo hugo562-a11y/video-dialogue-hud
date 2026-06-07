@@ -44,6 +44,7 @@ class VideoRenderer:
         self.ui_callback = ui_callback
         self.yolo_model = None
         self.video_path: str | None = None
+        self.source_video_path: str | None = None
         self.data_processor = DataProcessor()
 
         self.settings: dict = {"bubble_pos": "auto"}
@@ -636,11 +637,12 @@ class VideoRenderer:
         return rgb
 
     # ------------------------------------------------------------------ 匯出
-    def export_video(self):
+    def export_video(self, preview: bool = False):
         if not self.video_path or not self.tracking_data:
             return
         self.is_processing = True
-        safe_path = get_safe_path(self.video_path)
+        export_source_path = self.video_path if preview else (self.source_video_path or self.video_path)
+        safe_path = get_safe_path(export_source_path)
         cap = cv2.VideoCapture(safe_path)
         if not cap.isOpened():
             self.is_processing = False
@@ -652,8 +654,20 @@ class VideoRenderer:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS) or self.fps or 30
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or self.total_frames or 1)
+        proxy_width = max(1, int(width if preview else (self.video_width or width)))
+        proxy_height = max(1, int(height if preview else (self.video_height or height)))
+        scale_x = width / proxy_width
+        scale_y = height / proxy_height
 
-        real_out_path = available_output_path(os.path.splitext(self.video_path)[0] + "_hud_output.mp4")
+        base_video_path = self.source_video_path or self.video_path
+        suffix = "_hud_preview.mp4" if preview else "_hud_output.mp4"
+        out_base_path = os.path.splitext(base_video_path)[0] + suffix
+        real_out_path = out_base_path if preview else available_output_path(out_base_path)
+        if preview and os.path.exists(real_out_path):
+            try:
+                os.remove(real_out_path)
+            except OSError:
+                pass
         safe_out_path = os.path.join(tempfile.gettempdir(), "".join(random.choices(string.ascii_letters, k=12)) + "_hud.mp4")
         out = cv2.VideoWriter(safe_out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
         if not out.isOpened():
@@ -665,7 +679,17 @@ class VideoRenderer:
             return
 
         frame_count = 0
+        original_font_size = self.style.get("font_size", 72)
+        original_offsets = dict(self.bubble_offsets)
+        render_scale = (scale_x + scale_y) / 2
         try:
+            if abs(render_scale - 1.0) > 0.01:
+                self.style["font_size"] = max(1, int(round(int(original_font_size) * render_scale)))
+                self.bubble_offsets = {
+                    tid: (int(round(dx * scale_x)), int(round(dy * scale_y)))
+                    for tid, (dx, dy) in original_offsets.items()
+                }
+                self.bubble_cache.clear()
             while cap.isOpened() and self.is_processing:
                 ret, frame = cap.read()
                 if not ret:
@@ -675,7 +699,7 @@ class VideoRenderer:
                     if self.ui_callback and frame_count % 10 == 0:
                         self.ui_callback("progress", min(frame_count / max(total, 1), 1.0))
                     continue
-                boxes = self.tracking_data.get(frame_count, [])
+                boxes = self._scale_tracking_boxes(self.tracking_data.get(frame_count, []), scale_x, scale_y)
                 for box_data in boxes:
                     text = self._text_for_track(frame_count, box_data["id"])
                     self.draw_speech_bubble(frame, text, box_data["id"], boxes)
@@ -683,13 +707,34 @@ class VideoRenderer:
                 if self.ui_callback and frame_count % 10 == 0:
                     self.ui_callback("progress", min(frame_count / max(total, 1), 1.0))
         finally:
+            self.style["font_size"] = original_font_size
+            self.bubble_offsets = original_offsets
+            self.bubble_cache.clear()
             cap.release()
             out.release()
             duration = total / max(fps, 1)
-            self._merge_audio_or_move(safe_out_path, safe_path, real_out_path, duration)
+            audio_source_path = get_safe_path(self.source_video_path or self.video_path)
+            self._merge_audio_or_move(safe_out_path, audio_source_path, real_out_path, duration)
             self.is_processing = False
             if self.ui_callback:
                 self.ui_callback("finished", 1.0, out_path=real_out_path)
+
+    def _scale_tracking_boxes(self, boxes: list, scale_x: float, scale_y: float) -> list:
+        if abs(scale_x - 1.0) <= 0.01 and abs(scale_y - 1.0) <= 0.01:
+            return boxes
+        scaled = []
+        for box in boxes:
+            x1, y1, x2, y2 = box["bbox"]
+            scaled.append({
+                **box,
+                "bbox": (
+                    int(round(x1 * scale_x)),
+                    int(round(y1 * scale_y)),
+                    int(round(x2 * scale_x)),
+                    int(round(y2 * scale_y)),
+                ),
+            })
+        return scaled
 
     def _merge_audio_or_move(self, video_path: str, source_path: str, output_path: str, duration: float | None = None):
         ffmpeg = shutil.which("ffmpeg")

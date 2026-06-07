@@ -186,7 +186,7 @@ class PreviewMixin:
                     self.renderer.person_rois.append((max(0, x1), max(0, y1), max(0, x2), max(0, y2)))
                     self.mark_people_count_unconfirmed()
                     self.btn_clear_people.configure(state="normal")
-                    self.log(f"已加入人物框 {len(self.renderer.person_rois)}。框完請按確認框選。")
+                    self.log(f"已加入人物框 {len(self.renderer.person_rois)}。完成框選後即可掃描。")
             self._canvas_mode = "pan"
             self.btn_draw_people.configure(text="2  框選追踪")
             self._refresh_canvas()

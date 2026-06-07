@@ -131,11 +131,11 @@ class App(
         self.grid_rowconfigure(0, weight=1)
 
         # ---- 左側邊欄 ----
-        sidebar = ctk.CTkFrame(self, width=220, fg_color="#111827", corner_radius=8)
+        sidebar = ctk.CTkFrame(self, width=240, fg_color="#111827", corner_radius=8)
         sidebar.grid(row=0, column=0, sticky="nsew", padx=(10, 6), pady=10)
         sidebar.grid_propagate(False)
         sidebar.grid_columnconfigure(0, weight=1)
-        sidebar.grid_rowconfigure(12, weight=1)
+        sidebar.grid_rowconfigure(17, weight=1)
 
         ctk.CTkLabel(sidebar, text="影片對話 HUD", font=("Microsoft JhengHei UI", 20, "bold")).grid(
             row=0, column=0, sticky="w", padx=14, pady=(14, 2)
@@ -145,66 +145,110 @@ class App(
         )
 
         self.btn_video = ctk.CTkButton(sidebar, text="1  選擇影片", command=self.select_video, height=34)
-        self.btn_video.grid(row=2, column=0, sticky="ew", padx=12, pady=4)
-
-        self.btn_draw_people = ctk.CTkButton(
-            sidebar, text="2  框選追踪", command=self.start_person_box_mode, height=34, state="disabled"
+        self.workflow_group_labels = {}
+        self.workflow_group_labels["import"] = ctk.CTkLabel(
+            sidebar, text="1. 匯入與代理檔", anchor="w",
+            font=("Microsoft JhengHei UI", 13, "bold"), text_color="#43E2A8",
         )
-        self.btn_draw_people.grid(row=3, column=0, sticky="ew", padx=12, pady=4)
+        self.workflow_group_labels["import"].grid(row=2, column=0, sticky="ew", padx=12, pady=(6, 2))
+        self.btn_video.configure(text="選擇影片")
+        self.btn_video.grid(row=3, column=0, sticky="ew", padx=12, pady=4)
 
+        # 人物工具（確認 / 清除）
         person_tools = ctk.CTkFrame(sidebar, fg_color="transparent")
-        person_tools.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 4))
+        self.workflow_group_labels["people"] = ctk.CTkLabel(
+            sidebar, text="3. 人物與掃描", anchor="w",
+            font=("Microsoft JhengHei UI", 13, "bold"), text_color="#AAB0C0",
+        )
+        self.workflow_group_labels["people"].grid(row=7, column=0, sticky="ew", padx=12, pady=(10, 2))
+        person_tools.grid(row=10, column=0, sticky="ew", padx=12, pady=(0, 4))
         person_tools.grid_columnconfigure((0, 1), weight=1)
         self.btn_confirm_people = ctk.CTkButton(
-            person_tools, text="3  確認", command=self.confirm_people_count, height=30, state="disabled"
+            person_tools, text="4  確認", command=self.confirm_people_count, height=30, state="disabled"
         )
+        self.btn_confirm_people.configure(text="確認框選")
         self.btn_confirm_people.grid(row=0, column=0, sticky="ew", padx=(0, 3))
         self.btn_clear_people = ctk.CTkButton(
             person_tools, text="清除", command=self.clear_person_boxes, height=30,
             state="disabled", fg_color="#6B7280", hover_color="#7B8494",
         )
+        self.btn_clear_people.configure(text="清除")
         self.btn_clear_people.grid(row=0, column=1, sticky="ew", padx=(3, 0))
 
         self.btn_speech = ctk.CTkButton(
-            sidebar, text="4  辨識聲音", command=self.generate_speech_script,
+            sidebar, text="2  辨識聲音", command=self.generate_speech_script,
             height=34, state="disabled", fg_color="#B94A48", hover_color="#D15A57",
         )
+        self.workflow_group_labels["speech"] = ctk.CTkLabel(
+            sidebar, text="2. 聲音與腳本", anchor="w",
+            font=("Microsoft JhengHei UI", 13, "bold"), text_color="#AAB0C0",
+        )
+        self.workflow_group_labels["speech"].grid(row=4, column=0, sticky="ew", padx=12, pady=(10, 2))
+        self.btn_speech.configure(text="辨識聲音")
         self.btn_speech.grid(row=5, column=0, sticky="ew", padx=12, pady=4)
+
+        self.btn_name_people = ctk.CTkButton(
+            sidebar, text="3  人物命名", command=self.open_person_namer,
+            height=34, state="disabled", fg_color="#2563EB", hover_color="#1D4ED8",
+        )
+        self.btn_name_people.configure(text="命名人物")
+        self.btn_name_people.grid(row=8, column=0, sticky="ew", padx=12, pady=4)
+
+        self.btn_draw_people = ctk.CTkButton(
+            sidebar, text="4  框選追踪", command=self.start_person_box_mode, height=34, state="disabled"
+        )
+        self.btn_draw_people.configure(text="框選人物")
+        self.btn_draw_people.grid(row=9, column=0, sticky="ew", padx=12, pady=4)
 
         self.btn_scan = ctk.CTkButton(
             sidebar, text="5  掃描人物", command=self.start_preview_scan,
             height=34, state="disabled"
         )
-        self.btn_scan.grid(row=6, column=0, sticky="ew", padx=12, pady=4)
+        self.btn_scan.configure(text="掃描人物")
+        self.btn_scan.grid(row=11, column=0, sticky="ew", padx=12, pady=4)
 
         self.btn_export = ctk.CTkButton(
             sidebar, text="6  匯出影片", command=self.start_export,
             height=34, state="disabled", fg_color="#2E8B57", hover_color="#35A568",
         )
-        self.btn_export.grid(row=7, column=0, sticky="ew", padx=12, pady=4)
+        self.workflow_group_labels["export"] = ctk.CTkLabel(
+            sidebar, text="4. 校稿與匯出", anchor="w",
+            font=("Microsoft JhengHei UI", 13, "bold"), text_color="#AAB0C0",
+        )
+        self.workflow_group_labels["export"].grid(row=12, column=0, sticky="ew", padx=12, pady=(10, 2))
+        self.btn_export.configure(text="匯出影片")
+        self.btn_export_preview = ctk.CTkButton(
+            sidebar, text="匯出預覽影片", command=self.start_preview_export,
+            height=32, state="disabled", fg_color="#4B5563", hover_color="#5B6473",
+        )
+        self.btn_export_preview.grid(row=13, column=0, sticky="ew", padx=12, pady=(4, 2))
+        self.btn_export.grid(row=14, column=0, sticky="ew", padx=12, pady=4)
 
         self.progress_bar = ctk.CTkProgressBar(sidebar)
-        self.progress_bar.grid(row=8, column=0, sticky="ew", padx=12, pady=(12, 6))
+        self.progress_bar.grid(row=15, column=0, sticky="ew", padx=12, pady=(12, 6))
         self.progress_bar.set(0)
 
         self.status_label = ctk.CTkLabel(
             sidebar, text="尚未選擇影片", anchor="w", justify="left", wraplength=190
         )
-        self.status_label.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self.status_label.configure(text="先選擇影片，工具會建立 720 proxy。", wraplength=210)
+        self.status_label.grid(row=16, column=0, sticky="ew", padx=12, pady=(0, 8))
 
         self.btn_open_export = ctk.CTkButton(
             sidebar, text="開啟輸出影片", command=self.open_export_video,
             height=30, state="disabled", fg_color="#2563EB", hover_color="#1D4ED8",
         )
-        self.btn_open_export.grid(row=10, column=0, sticky="ew", padx=12, pady=(4, 4))
+        self.btn_open_export.configure(text="開啟輸出影片")
+        self.btn_open_export.grid(row=17, column=0, sticky="ew", padx=12, pady=(4, 4))
 
         self.btn_toggle_log = ctk.CTkButton(
             sidebar, text="隱藏記錄", command=self.toggle_log_panel,
             height=30, fg_color="#4B5563", hover_color="#5B6473",
         )
-        self.btn_toggle_log.grid(row=11, column=0, sticky="ew", padx=12, pady=(2, 4))
+        self.btn_toggle_log.configure(text="顯示/隱藏記錄")
+        self.btn_toggle_log.grid(row=19, column=0, sticky="ew", padx=12, pady=(2, 4))
         self.log_box = ctk.CTkTextbox(sidebar, wrap="word", height=160)
-        self.log_box.grid(row=12, column=0, sticky="nsew", padx=12, pady=(4, 12))
+        self.log_box.grid(row=18, column=0, sticky="nsew", padx=12, pady=(4, 12))
 
         # ---- 中央主區域 ----
         main = ctk.CTkFrame(self, fg_color="#0B1220", corner_radius=8)

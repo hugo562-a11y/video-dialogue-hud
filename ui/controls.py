@@ -112,6 +112,7 @@ class ControlsMixin:
         self._preview_play_start_frame = int(float(self.slider_timeline.get()))
         self.start_preview_audio()
         self._preview_play_start_time = time.perf_counter()
+        self._last_playback_ui_sync_time = 0.0
         self._play_preview_step()
 
     def stop_preview_playback(self):
@@ -134,10 +135,13 @@ class ControlsMixin:
         if frame_idx >= total:
             self.stop_preview_playback()
             return
-        self.slider_timeline.set(frame_idx)
-        self.update_timecode_and_waveform(frame_idx)
-        self.sync_fields_for_frame(frame_idx)
         now = time.perf_counter()
+        self.slider_timeline.set(frame_idx)
+        sync_ui = now - getattr(self, "_last_playback_ui_sync_time", 0.0) >= 0.20
+        self.update_timecode_and_waveform(frame_idx, draw_waveform=sync_ui)
+        if sync_ui:
+            self._last_playback_ui_sync_time = now
+            self.sync_fields_for_frame(frame_idx)
         render_fps = min(max(self.renderer.fps or 30, 1), 18)
         if not self._preview_render_pending and now - self._last_preview_render_time >= 1.0 / render_fps:
             self._last_preview_render_time = now
@@ -159,7 +163,7 @@ class ControlsMixin:
         seconds = frame_to_seconds(frame_idx, self.renderer.fps)
         self.stop_audio_preview()
         cmd = [
-            ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet",
+            ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet", "-vn",
             "-ss", f"{seconds:.2f}",
             self._audio_preview_source(),
         ]
@@ -189,7 +193,7 @@ class ControlsMixin:
         self._last_audio_preview_at = seconds
         self.stop_audio_preview()
         cmd = [
-            ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet",
+            ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet", "-vn",
             "-ss", f"{seconds:.2f}",
             "-t", f"{duration:.2f}",
             self._audio_preview_source(),
@@ -204,11 +208,11 @@ class ControlsMixin:
             )
         except Exception:
             self._ffplay_process = None
+            self.log("音訊預覽播放失敗。")
 
     def _audio_preview_source(self):
-        if self._waveform_audio_path and os.path.exists(self._waveform_audio_path):
-            return self._waveform_audio_path
-        return get_safe_path(self.renderer.video_path)
+        source_path = getattr(self.renderer, "source_video_path", None) or self.renderer.video_path
+        return get_safe_path(source_path)
 
     def _clear_waveform_audio_cache(self):
         old_path = getattr(self, "_waveform_audio_path", None)
@@ -262,6 +266,8 @@ class ControlsMixin:
                         self.on_scan_finished()
                     elif msg["type"] == "finished":
                         self.on_export_finished(msg["out_path"])
+                    elif msg["type"] == "proxy_done":
+                        self.on_proxy_done(msg["source_path"], msg["proxy_path"])
                     elif msg["type"] == "preview":
                         if msg.get("request_id") != self._preview_request_id:
                             continue
@@ -384,13 +390,14 @@ class ControlsMixin:
             self.after_cancel(self._scrub_after_id)
         self._scrub_after_id = self.after(80, lambda: self._render_scrub(frame_idx))
 
-    def update_timecode_and_waveform(self, frame_idx):
+    def update_timecode_and_waveform(self, frame_idx, draw_waveform=True):
         if self.renderer.fps:
             seconds = int(frame_to_seconds(frame_idx, self.renderer.fps))
             mm, ss = divmod(seconds, 60)
             hh, mm = divmod(mm, 60)
             self.lbl_timecode.configure(text=f"{hh:02d}:{mm:02d}:{ss:02d}" if hh else f"{mm:02d}:{ss:02d}")
-        self.draw_waveform(frame_idx)
+        if draw_waveform:
+            self.draw_waveform(frame_idx)
 
     def _render_scrub(self, frame_idx):
         self._preview_render_pending = True
@@ -470,4 +477,5 @@ class ControlsMixin:
                 pass
             self._script_preview_after_id = None
         self._clear_waveform_audio_cache()
+        self._cleanup_proxy_video()
         self.destroy()
