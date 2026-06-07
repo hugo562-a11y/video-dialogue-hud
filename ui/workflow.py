@@ -1053,8 +1053,8 @@ class WorkflowMixin:
             encoder = self._voice_encoder
 
             embeddings = []
-            # 最短 0.8 秒，太短的片段聲紋不穩定，用零向量佔位
-            min_samples = int(audio_rate * 0.8)
+            # 最短 0.5 秒，太短的片段聲紋不穩定，用零向量佔位
+            min_samples = int(audio_rate * 0.5)
             for entry in entries:
                 s = int(entry["start"] * audio_rate)
                 e = int(entry["end"] * audio_rate)
@@ -1094,8 +1094,8 @@ class WorkflowMixin:
             encoder = self._voice_encoder
 
             embeddings = []
-            # 1.2 秒以上的片段才採用，確保聲紋向量穩定
-            min_samples = int(audio_rate * 1.2)
+            # 0.7 秒以上的片段才採用；多人輪流說短句時 1.2s 門檻會篩掉太多樣本
+            min_samples = int(audio_rate * 0.7)
             for entry in entries:
                 s = int(max(0.0, entry["start"]) * audio_rate)
                 e = int(max(entry["start"], entry["end"]) * audio_rate)
@@ -1107,7 +1107,7 @@ class WorkflowMixin:
                 if np.any(emb):
                     embeddings.append(emb)
 
-            if len(embeddings) < 4:
+            if len(embeddings) < 3:
                 return 1
 
             emb_array = np.array(embeddings, dtype=np.float32)
@@ -1128,8 +1128,10 @@ class WorkflowMixin:
                     best_score = score
                     best_k = k
 
-            # 閾值提高到 0.28：只有聲紋差異非常明顯時才認定為多人
-            return best_k if best_score >= 0.28 else 1
+            # silhouette score 隨 k 增加自然下降；用漸進式閾值避免低估多人場景
+            # k=2:0.20  k=3:0.17  k=4:0.14  k=5:0.11  k=6+:0.10
+            threshold = max(0.10, 0.23 - (best_k - 2) * 0.03)
+            return best_k if best_score >= threshold else 1
         except Exception as exc:
             self.ui_queue.put({"type": "error_log", "text": f"聲紋估算失敗，先使用 1 個人物：{exc}"})
             return 1
