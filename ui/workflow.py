@@ -708,14 +708,6 @@ class WorkflowMixin:
             anchor="w",
         )
         self._speaker_mapper_info.pack(side="left", fill="x", expand=True)
-        add_person_button = ctk.CTkButton(
-            header_frame,
-            text="新增人物",
-            width=100,
-            command=lambda: add_person(),
-        )
-        add_person_button.pack(side="right")
-
         # ---- 重新分群列（只在有語音辨識結果時才有意義）----
         regroup_frame = ctk.CTkFrame(win, fg_color="transparent")
         regroup_frame.pack(fill="x", padx=14, pady=(0, 6))
