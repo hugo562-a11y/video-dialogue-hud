@@ -1127,13 +1127,15 @@ class WorkflowMixin:
             return 1
         try:
             from resemblyzer import VoiceEncoder, preprocess_wav
+            from sklearn.decomposition import PCA
+            from sklearn.mixture import GaussianMixture
 
             if not getattr(self, "_voice_encoder", None):
                 self._voice_encoder = VoiceEncoder()
             encoder = self._voice_encoder
 
             embeddings = []
-            min_samples = int(audio_rate * 0.7)
+            min_samples = int(audio_rate * 0.6)
             for entry in entries:
                 s = int(max(0.0, entry["start"]) * audio_rate)
                 e = int(max(entry["start"], entry["end"]) * audio_rate)
@@ -1145,7 +1147,7 @@ class WorkflowMixin:
                 if np.any(emb):
                     embeddings.append(emb)
 
-            if len(embeddings) < 2:
+            if len(embeddings) < 3:
                 return 1
 
             emb_array = np.array(embeddings, dtype=np.float32)
@@ -1153,34 +1155,30 @@ class WorkflowMixin:
             norms = np.where(norms == 0, 1.0, norms)
             emb_array = emb_array / norms
 
-            # 用樹狀圖（dendrogram）的合併距離序列找切割點。
-            # 多人場景中「所有成對距離」以跨人距離為主，直接找缺口會找錯。
-            # 樹狀圖的合併距離先小（同人片段合併）再大（跨人合併），
-            # 最大跳躍就是「同人 → 不同人」的邊界，在缺口中間切最準確。
-            from scipy.cluster.hierarchy import linkage as sp_linkage, fcluster
-            from scipy.spatial.distance import pdist
+            # GMM + BIC：speaker diarization 學術標準做法。
+            # BIC 自動懲罰過多的群數，不需要固定閾值或找缺口，
+            # 對人少（2人）和人多（6人）場景都能給出合理估算。
+            # PCA 先降維，避免 256 維高維空間樣本太少導致 GMM 退化。
+            n_pca = min(10, len(embeddings) - 1)
+            reduced = PCA(n_components=n_pca).fit_transform(emb_array)
 
-            dists = pdist(emb_array, metric="cosine")
-            Z = sp_linkage(dists, method="average")
-            merge_dists = Z[:, 2]
+            upper = min(max_speakers, max(1, len(embeddings) // 2))
+            best_k, best_bic = 1, np.inf
+            for k in range(1, upper + 1):
+                try:
+                    gmm = GaussianMixture(
+                        n_components=k, covariance_type="diag",
+                        n_init=5, random_state=42, reg_covar=1e-2,
+                    )
+                    gmm.fit(reduced)
+                    bic = gmm.bic(reduced)
+                    if bic < best_bic:
+                        best_bic = bic
+                        best_k = k
+                except Exception:
+                    break
 
-            if len(merge_dists) >= 2:
-                gaps = np.diff(merge_dists)
-                gap_pos = int(np.argmax(gaps))
-                max_gap = float(gaps[gap_pos])
-                if max_gap >= 0.10:
-                    cut = float(np.clip(
-                        (merge_dists[gap_pos] + merge_dists[gap_pos + 1]) / 2,
-                        0.15, 0.55,
-                    ))
-                    labels = fcluster(Z, cut, criterion="distance")
-                    n_clusters = int(labels.max())
-                else:
-                    n_clusters = 1
-            else:
-                n_clusters = 1
-
-            return max(1, min(n_clusters, max_speakers))
+            return max(1, min(best_k, max_speakers))
         except Exception as exc:
             self.ui_queue.put({"type": "error_log", "text": f"聲紋估算失敗，先使用 1 個人物：{exc}"})
             return 1
