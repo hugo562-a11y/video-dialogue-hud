@@ -223,9 +223,15 @@ class WorkflowMixin:
         if not self.renderer.video_path:
             messagebox.showinfo(APP_TITLE, "請先選擇影片。")
             return
+        if getattr(self, "_canvas_mode", "pan") == "person_roi":
+            # 再按一次 → 退出框選模式
+            self._canvas_mode = "pan"
+            self.btn_draw_people.configure(text="框選追踪", fg_color=["#3B8ED0", "#1F6AA5"])
+            self.log("已結束框選。")
+            return
         self._canvas_mode = "person_roi"
-        self.btn_draw_people.configure(text="框選中...", fg_color="#B94A48")
-        self.log("請在預覽畫面框選人物。")
+        self.btn_draw_people.configure(text="完成框選 ✓", fg_color="#B94A48")
+        self.log("請在預覽畫面框選人物。右鍵點框可刪除。框好所有人後再按「完成框選」。")
     def confirm_people_count(self):
         if not self.renderer.person_rois:
             messagebox.showinfo(APP_TITLE, "請先框選人物。")
@@ -815,20 +821,16 @@ class WorkflowMixin:
                 if speaker:
                     self.renderer.yolo_id_to_speaker[tid] = speaker
                 self.renderer.set_person_bubble_style(tid, style_var.get(), color_var.get(), position_var.get())
-            for idx in range(1, self.renderer.expected_people_count + 1):
-                self.renderer.yolo_id_to_speaker.setdefault(idx, f"人物 {idx}")
             self.renderer.bubble_cache.clear()
-            if getattr(self, "_speech_segments", None):
-                self.reassign_speech_rows()
-                self.log(f"已依 {self.renderer.expected_people_count} 個人物重新分配聲紋。")
-            else:
-                renamed = 0
-                for tid, entry, _, _, _ in rows:
-                    old_speaker = old_speakers.get(tid, f"人物 {tid}")
-                    speaker = entry.get().strip()
-                    if speaker:
-                        renamed += self.renderer.data_processor.replace_speaker(old_speaker, speaker)
-                self.log(f"已更新腳本中的 {renamed} 筆說話者。")
+            # 直接在 DataFrame 改名，不重跑聲紋分群（避免重分群打亂人物編號）
+            renamed = 0
+            for tid, entry, _, _, _ in rows:
+                old_name = old_speakers.get(tid, f"人物 {tid}")
+                new_name = entry.get().strip()
+                if new_name and new_name != old_name:
+                    renamed += self.renderer.data_processor.replace_speaker(old_name, new_name)
+            if renamed:
+                self.log(f"已更新腳本中的 {renamed} 筆說話者名稱。")
             self.on_timeline_scrub(self.slider_timeline.get())
             self.refresh_script_panel()
             win.destroy()

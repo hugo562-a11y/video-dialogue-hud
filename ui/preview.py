@@ -186,10 +186,10 @@ class PreviewMixin:
                     self.renderer.person_rois.append((max(0, x1), max(0, y1), max(0, x2), max(0, y2)))
                     self.mark_people_count_unconfirmed()
                     self.btn_clear_people.configure(state="normal")
-                    self.log(f"已加入人物框 {len(self.renderer.person_rois)}。完成框選後即可掃描。")
-            self._canvas_mode = "pan"
-            self.btn_draw_people.configure(text="2  框選追踪")
+                    self.log(f"已加入人物框 {len(self.renderer.person_rois)}。")
+            # 保持框選模式，讓使用者連續框選多人
             self._refresh_canvas()
+            return
         elif self._canvas_mode == "bubble":
             self._bubble_drag_tid = None
             self._canvas_mode = "pan"
@@ -199,8 +199,27 @@ class PreviewMixin:
         elif not self._drag_moved:
             self.on_preview_click(event)
 
+    def _hit_roi(self, cx: float, cy: float):
+        """回傳右鍵點到的 person_roi 索引（0-based），沒有則回傳 None。"""
+        vx, vy = self._canvas_to_video(cx, cy)
+        for idx, (rx1, ry1, rx2, ry2) in enumerate(self.renderer.person_rois):
+            if rx1 <= vx <= rx2 and ry1 <= vy <= ry2:
+                return idx
+        return None
+
     def _on_canvas_right_click(self, event):
         self.preview_canvas.focus_set()
+        # 框選模式下，右鍵刪除所點到的人物框
+        if self._canvas_mode == "person_roi":
+            roi_idx = self._hit_roi(event.x, event.y)
+            if roi_idx is not None:
+                self.renderer.person_rois.pop(roi_idx)
+                self.mark_people_count_unconfirmed()
+                if not self.renderer.person_rois:
+                    self.btn_clear_people.configure(state="disabled")
+                self.log(f"已刪除人物框，剩餘 {len(self.renderer.person_rois)} 個。")
+                self._refresh_canvas()
+            return
         tid = self._hit_bubble(event.x, event.y)
         if tid is None:
             tid = self._hit_box(event.x, event.y)
