@@ -1048,13 +1048,13 @@ class WorkflowMixin:
             from resemblyzer import VoiceEncoder, preprocess_wav
             from sklearn.cluster import KMeans
 
-            # Keep the encoder cached because model loading is relatively expensive.
             if not getattr(self, "_voice_encoder", None):
                 self._voice_encoder = VoiceEncoder()
             encoder = self._voice_encoder
 
             embeddings = []
-            min_samples = int(audio_rate * 0.3)
+            # 最短 0.8 秒，太短的片段聲紋不穩定，用零向量佔位
+            min_samples = int(audio_rate * 0.8)
             for entry in entries:
                 s = int(entry["start"] * audio_rate)
                 e = int(entry["end"] * audio_rate)
@@ -1070,8 +1070,13 @@ class WorkflowMixin:
             if not np.any(emb_array):
                 return [0] * len(entries)
 
+            # L2 正規化：讓 K-Means 使用 Euclidean 距離等效於餘弦相似度
+            norms = np.linalg.norm(emb_array, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1.0, norms)
+            emb_array = emb_array / norms
+
             k = min(n_speakers, len(entries))
-            labels = KMeans(n_clusters=k, n_init="auto", random_state=42).fit_predict(emb_array)
+            labels = KMeans(n_clusters=k, n_init=10, random_state=42).fit_predict(emb_array)
             return labels.tolist()
         except Exception:
             return [0] * len(entries)
@@ -1089,7 +1094,8 @@ class WorkflowMixin:
             encoder = self._voice_encoder
 
             embeddings = []
-            min_samples = int(audio_rate * 0.45)
+            # 1.2 秒以上的片段才採用，確保聲紋向量穩定
+            min_samples = int(audio_rate * 1.2)
             for entry in entries:
                 s = int(max(0.0, entry["start"]) * audio_rate)
                 e = int(max(entry["start"], entry["end"]) * audio_rate)
@@ -1101,21 +1107,29 @@ class WorkflowMixin:
                 if np.any(emb):
                     embeddings.append(emb)
 
-            if len(embeddings) < 3:
+            if len(embeddings) < 4:
                 return 1
+
             emb_array = np.array(embeddings, dtype=np.float32)
+            # L2 正規化後做 K-Means，等效於用餘弦相似度聚類
+            norms = np.linalg.norm(emb_array, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1.0, norms)
+            emb_array = emb_array / norms
+
             upper = min(max_speakers, len(embeddings) - 1)
             best_k = 1
             best_score = -1.0
             for k in range(2, upper + 1):
-                labels = KMeans(n_clusters=k, n_init="auto", random_state=42).fit_predict(emb_array)
+                labels = KMeans(n_clusters=k, n_init=10, random_state=42).fit_predict(emb_array)
                 if len(set(labels)) < 2:
                     continue
                 score = float(silhouette_score(emb_array, labels))
                 if score > best_score:
                     best_score = score
                     best_k = k
-            return best_k if best_score >= 0.18 else 1
+
+            # 閾值提高到 0.28：只有聲紋差異非常明顯時才認定為多人
+            return best_k if best_score >= 0.28 else 1
         except Exception as exc:
             self.ui_queue.put({"type": "error_log", "text": f"聲紋估算失敗，先使用 1 個人物：{exc}"})
             return 1
