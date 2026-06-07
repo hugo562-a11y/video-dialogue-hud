@@ -1,222 +1,176 @@
 <div align="center">
 
-# 🎬 Video Dialogue HUD
+# 🎬 影片對話 HUD 工具
+### Video Dialogue HUD
 
-**影片對話 HUD 工具**
+自動偵測影片中的人物，將對話字幕以氣泡形式疊加在說話者旁邊，匯出成品影片。
 
-Automatically detect speakers in a video, overlay their dialogue as styled speech bubbles, and export the final cut — all from a single desktop app.
+Automatically overlay speech-bubble dialogue on detected speakers and export the final video.
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Platform](https://img.shields.io/badge/平台-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
+[![License](https://img.shields.io/badge/授權-MIT-green)](LICENSE)
 [![Tests](https://github.com/hugo562-a11y/video-dialogue-hud/actions/workflows/tests.yml/badge.svg)](https://github.com/hugo562-a11y/video-dialogue-hud/actions/workflows/tests.yml)
 
-[English](#overview) · [中文說明](#中文說明)
+[📥 立即下載 / Download](#-下載與安裝) · [功能介紹](#-功能) · [操作說明](#-操作說明) · [Developer Setup](#developer-setup-from-source)
 
 </div>
 
 ---
 
-## Overview
+<!-- TODO: 錄製操作示範 GIF 後取消下面的注釋
+![Demo](docs/demo.gif)
+-->
 
-**Video Dialogue HUD** is a desktop tool for content creators and video editors who work with multi-speaker footage. It tracks each person using YOLOv8, maps their lines from a dialogue script (CSV / Excel) or auto-transcribes audio via Faster-Whisper, and renders customisable speech-bubble overlays directly onto the video.
+## 📥 下載與安裝
 
-<!-- TODO: add a demo GIF here — recommended size 1200×675 -->
-<!-- ![Demo](docs/demo.gif) -->
+> 一般使用者請看這裡。**不需要安裝 Python，不需要任何程式知識。**
 
-### Key Features
+### 第一步：下載壓縮檔
 
-| Feature | Details |
+前往 **[Releases 頁面](https://github.com/hugo562-a11y/video-dialogue-hud/releases/latest)**，下載最新版的：
+
+```
+VideoDialogueHUD_portable.zip
+```
+
+### 第二步：解壓縮
+
+將 `.zip` 解壓縮到任意位置，例如：
+
+```
+D:\VideoDialogueHUD\
+├── 影片對話HUD工具.exe   ← 主程式
+├── ffmpeg.exe            ← 已內建，無需另外安裝
+├── yolov8n.pt            ← AI 模型，已內建
+└── （其他支援檔案）
+```
+
+### 第三步：直接執行
+
+雙擊 `影片對話HUD工具.exe`，程式即可啟動。
+
+> ⚠️ **第一次啟動** 需要約 10-30 秒載入 AI 模型，屬正常現象，請耐心等候。
+
+> ⚠️ **Windows 安全警告**：若出現「Windows 已保護您的電腦」彈窗，點「更多資訊」→「仍要執行」即可。這是未購買程式碼簽章憑證的正常現象，程式本身無惡意程式碼。
+
+---
+
+## ✨ 功能
+
+| 功能 | 說明 |
 |---|---|
-| **Person tracking** | YOLOv8 Nano — detects & tracks multiple people across frames |
-| **Auto-transcription** | Faster-Whisper integration; generates a time-coded dialogue script from audio |
-| **Speech bubbles** | 5 styles (classic / oval / capsule / tech / sharp), 6 colours, 4 positions, drag-to-reposition |
-| **Waveform editor** | Visual audio waveform with interactive time-range editing |
-| **Dialogue editor** | Split, merge, delete, restore, bulk speaker rename, undo / redo |
-| **Smart export** | Cuts silence segments, merges audio with ffmpeg, handles CJK paths safely |
-| **Script import** | Load dialogue from CSV or Excel (`.xlsx` / `.xls`) |
+| **人物追蹤** | YOLOv8 自動偵測並追蹤畫面中的多位說話者 |
+| **語音辨識** | 整合 Faster-Whisper，從影片音軌自動產生帶時間碼的對話腳本 |
+| **對話氣泡** | 5 種樣式 × 6 種顏色 × 4 種位置，支援拖曳調整 |
+| **波形編輯器** | 視覺化音軌波形，可手動對齊時間軸 |
+| **對話編輯** | 分割、合併、刪除、還原、批次改名，附 Undo / Redo |
+| **智慧匯出** | 自動剪除靜音段、ffmpeg 音訊合成、支援中文路徑 |
+| **腳本匯入** | 支援 CSV / Excel（.xlsx / .xls）格式對話腳本 |
 
 ---
 
-## Requirements
+## 📖 操作說明
 
-- **OS**: Windows 10 / 11 (64-bit)
-- **Python**: 3.10 or newer
-- **ffmpeg**: must be on `PATH` or placed in the project root → [download](https://ffmpeg.org/download.html)
-- **GPU** *(optional)*: NVIDIA GPU with CUDA improves YOLO scanning and Whisper transcription speed significantly
+### 基本流程
+
+```
+1. 選取影片   →  載入 MP4 / AVI / MOV / MKV
+2. 取得腳本   →  語音辨識（Whisper）或載入 CSV / Excel
+3. 確認人數   →  設定影片中的說話者數量
+4. 掃描人物   →  YOLO 逐幀追蹤每位說話者（需要幾分鐘）
+5. 對應說話者 →  在右側面板將名稱對應到偵測人物
+6. 調整樣式   →  設定每位說話者的氣泡顏色、樣式、位置
+7. 匯出影片   →  渲染最終成品影片
+```
+
+### 對話腳本格式（CSV / Excel）
+
+若要手動載入腳本，請準備以下欄位的表格：
+
+| 欄位 | 格式 | 範例 |
+|---|---|---|
+| `start` | `HH:MM:SS`、`MM:SS` 或秒數 | `00:01:23` |
+| `end` | 同上 | `00:01:27` |
+| `speaker` | 說話者名稱 | `小明` |
+| `text` | 對話內容 | `你好！` |
+
+也支援單一 `time` 欄位格式：`"00:01:23 - 00:01:27"`
+
+### 系統需求
+
+- **作業系統**：Windows 10 / 11（64 位元）
+- **顯示卡**：NVIDIA GPU 可大幅加速 AI 掃描（無 GPU 也能正常使用，但速度較慢）
+- **硬碟空間**：程式本體約 1.5 GB
 
 ---
 
-## Installation
+## 🔧 Developer Setup (from source)
 
-### 1 — Clone the repository
+> 以下內容供想要從原始碼執行或貢獻程式碼的開發者參考。
+
+**系統需求：** Python 3.10+、ffmpeg（加入 PATH）、Git
 
 ```bash
 git clone https://github.com/hugo562-a11y/video-dialogue-hud.git
 cd video-dialogue-hud
-```
 
-### 2 — Create a virtual environment
-
-```bash
 python -m venv .venv
 .venv\Scripts\activate
-```
 
-### 3 — Install dependencies
-
-```bash
 pip install -r requirements.txt
-```
-
-> **GPU users**: install a CUDA-enabled PyTorch build *before* running the command above.
-> Visit [pytorch.org/get-started](https://pytorch.org/get-started/locally/) and select your CUDA version.
-
-### 4 — Download the YOLOv8 model
-
-The model file is not bundled in the repository. Download it once:
-
-```bash
-python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
-```
-
-This saves `yolov8n.pt` into the Ultralytics cache; the app will find it automatically.
-Alternatively, download it manually from [ultralytics/assets](https://github.com/ultralytics/assets/releases) and place it in the project root.
-
-### 5 — CJK font *(optional)*
-
-The app falls back to Windows' built-in `msjh.ttc` (MingLiU). For sharper CJK rendering in exported videos, download **Noto Sans CJK TC Bold** from [Google Fonts](https://fonts.google.com/noto/specimen/Noto+Sans+TC) and place `NotoSansCJKtc-Bold.otf` in the project root.
-
----
-
-## Usage
-
-```bash
 python main.py
 ```
 
-### Workflow
+> **GPU 使用者**：請先至 [pytorch.org](https://pytorch.org/get-started/locally/) 安裝對應 CUDA 版本的 PyTorch，再執行上述指令。
 
-```
-1. Select video     →  load MP4 / AVI / MOV / MKV
-2. Load script      →  auto-transcribe (Whisper) or import CSV / Excel
-3. Confirm people   →  set the number of speakers in the video
-4. Scan             →  YOLO tracks each person frame-by-frame
-5. Map speakers     →  assign speaker names to detected persons
-6. Customise style  →  choose bubble style, colour, and position per speaker
-7. Export           →  render final video with overlaid bubbles
+### 建置可攜式 EXE
+
+```bash
+# 雙擊執行即可（自動下載所有必要資源並打包）
+build_portable.bat
 ```
 
-### Dialogue script format
+建置完成後會產出 `VideoDialogueHUD_portable.zip`，上傳至 GitHub Releases 供使用者下載。
 
-The app accepts a CSV or Excel file with these columns:
-
-| Column | Format | Example |
-|---|---|---|
-| `start` | `HH:MM:SS`, `MM:SS`, or seconds | `00:01:23` |
-| `end` | same as `start` | `00:01:27` |
-| `speaker` | any string | `Alice` |
-| `text` | dialogue line | `Hello there!` |
-
-Columns named `time` (as `"HH:MM:SS - HH:MM:SS"`) are also supported.
-
----
-
-## Running Tests
+### 執行測試
 
 ```bash
 python -m pytest tests/ -v
-# or
-python -m unittest discover tests/
 ```
 
----
-
-## Project Structure
+### 專案結構
 
 ```
 video-dialogue-hud/
-├── main.py                 # Entry point
-├── requirements.txt
-├── main.spec               # PyInstaller spec (standalone EXE build)
-├── build_portable.bat      # Build helper script
+├── main.py                 # 程式入口
+├── requirements.txt        # Python 套件清單
+├── main.spec               # PyInstaller 打包設定
+├── build_portable.bat      # 一鍵建置腳本
 ├── core/
-│   ├── constants.py        # Global constants, paths
-│   ├── data_processor.py   # Dialogue DataFrame management
-│   ├── utils.py            # Time parsing, formatting helpers
-│   └── video_renderer.py   # YOLO tracking, bubble rendering, export
+│   ├── constants.py        # 全域常數與路徑
+│   ├── data_processor.py   # 對話資料管理
+│   ├── utils.py            # 時間解析、格式轉換
+│   └── video_renderer.py   # YOLO 追蹤、氣泡渲染、影片匯出
 ├── ui/
-│   ├── app.py              # Main window (mixin orchestration)
-│   ├── controls.py         # Playback, undo/redo, logging
-│   ├── editing.py          # Sentence split / merge / delete
-│   ├── preview.py          # Canvas with zoom, pan, ROI
-│   ├── script_panel.py     # Right-panel dialogue editor
-│   ├── waveform.py         # Audio waveform visualisation
-│   └── workflow.py         # Load → scan → export pipeline
+│   ├── app.py              # 主視窗
+│   ├── controls.py         # 播放、Undo/Redo
+│   ├── editing.py          # 句子編輯操作
+│   ├── preview.py          # 預覽畫布（縮放、平移）
+│   ├── script_panel.py     # 右側對話腳本面板
+│   ├── waveform.py         # 音訊波形顯示
+│   └── workflow.py         # 載入→掃描→匯出流程
 └── tests/
     └── test_core_logic.py
 ```
 
 ---
 
-## Building a Standalone EXE
+## 🤝 Contributing
 
-Requires [PyInstaller](https://pyinstaller.org/):
-
-```bash
-pip install pyinstaller
-pyinstaller main.spec
-```
-
-The output appears in `dist/影片對話HUD工具/`. You can also run `build_portable.bat` which handles the full build in one step.
+歡迎提交 Issue 或 Pull Request！請先閱讀 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
-## Contributing
-
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
-
----
-
-## License
+## 📄 授權 / License
 
 [MIT](LICENSE) © 2026
-
----
-
-## 中文說明
-
-### 簡介
-
-**影片對話 HUD 工具** 是一款 Windows 桌面應用程式，能自動偵測影片中的說話者，並將對話字幕以氣泡樣式疊加在對應人物旁邊，最後匯出成品影片。
-
-### 主要功能
-
-- **YOLOv8 人物追蹤**：自動偵測並追蹤多位說話者
-- **語音辨識**：整合 Faster-Whisper，從影片音軌自動生成帶時間碼的對話腳本
-- **對話氣泡**：5 種樣式、6 種顏色、4 種位置，支援拖曳調整位置
-- **波形編輯器**：視覺化音軌，可手動對齊時間軸
-- **對話編輯**：分割、合併、刪除、還原、批次改名說話者，附完整 Undo / Redo
-- **智慧匯出**：自動剪除靜音段、ffmpeg 音訊合成、支援中文路徑
-
-### 快速開始
-
-```bash
-git clone https://github.com/hugo562-a11y/video-dialogue-hud.git
-cd video-dialogue-hud
-python -m venv .venv && .venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
-```
-
-詳細安裝步驟請見 [Installation](#installation)。
-
-### 基本操作流程
-
-1. **選取影片** → 載入 MP4 / AVI / MOV / MKV
-2. **取得腳本** → 語音辨識（Whisper）或載入 CSV / Excel 腳本
-3. **確認人數** → 設定影片中的說話者數量
-4. **掃描人物** → YOLO 逐幀追蹤每位說話者
-5. **對應說話者** → 在腳本面板中將名稱對應到偵測人物
-6. **調整樣式** → 設定氣泡顏色、樣式、位置
-7. **匯出影片** → 渲染最終成品
