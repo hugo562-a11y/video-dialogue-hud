@@ -18,13 +18,9 @@ datas = [
     ("NotoSansCJKtc-Bold.otf", "."),
 ]
 
-# ffmpeg.exe 必須存在才能打包（由 build_portable.bat 自動下載）
-if not os.path.exists("ffmpeg.exe"):
-    raise SystemExit(
-        "\n[ERROR] ffmpeg.exe not found in project root.\n"
-        "Run build_portable.bat — it will download ffmpeg automatically.\n"
-    )
-datas.append(("ffmpeg.exe", "."))
+# ffmpeg.exe 不內建；使用者需自行下載並放在程式同目錄或加入系統 PATH
+if os.path.exists("ffmpeg.exe"):
+    datas.append(("ffmpeg.exe", "."))
 
 # 隱式匯入 (確保 PyInstaller 抓得到動態載入的套件)
 hiddenimports = [

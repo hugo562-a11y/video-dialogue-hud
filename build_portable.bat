@@ -24,19 +24,15 @@ if not exist "yolov8n.pt" (
     if %errorlevel% neq 0 ( echo [ERROR] Download failed. & pause & exit /b 1 )
 )
 
-:: Download CJK font if missing (optional ~18 MB, falls back to system font if unavailable)
+:: Download CJK font if missing (~18 MB, optional)
 if not exist "NotoSansCJKtc-Bold.otf" (
     echo [ASSET] Downloading NotoSansCJKtc-Bold.otf ...
     python -c "import urllib.request as r; r.urlretrieve(\"https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Bold.otf\", \"NotoSansCJKtc-Bold.otf\"); print(\"  Font OK\")" 2>nul
     echo [INFO] Font done (failure is OK, app uses system font as fallback).
 )
 
-:: Download ffmpeg.exe if missing (~100 MB)
-if not exist "ffmpeg.exe" (
-    echo [ASSET] Downloading ffmpeg.exe, please wait ...
-    python -c "import urllib.request as r,zipfile,os,shutil; r.urlretrieve(\"https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip\", \"_fftemp.zip\"); z=zipfile.ZipFile(\"_fftemp.zip\"); [z.extract(n, \"_fftemp\") for n in z.namelist() if n.endswith(\"bin/ffmpeg.exe\")]; src=next(p for p in (os.path.join(r2,f) for r2,d,fs in os.walk(\"_fftemp\") for f in fs) if p.endswith(\"ffmpeg.exe\")); shutil.copy(src, \"ffmpeg.exe\"); [shutil.rmtree(\"_fftemp\"), os.remove(\"_fftemp.zip\")]; print(\"  ffmpeg.exe OK\")"
-    if %errorlevel% neq 0 ( echo [ERROR] ffmpeg download failed. & pause & exit /b 1 )
-)
+:: NOTE: ffmpeg.exe is NOT bundled. Users download it themselves.
+:: If ffmpeg.exe exists here it will be included; otherwise users place it next to the exe.
 
 :: ?? 1. Build virtualenv ?????????????????????????????????
 
@@ -79,8 +75,8 @@ echo.
 echo =======================================================
 echo   Build complete!
 echo   Portable zip : VideoDialogueHUD_portable.zip
-echo   Raw folder   : dist\
-echo   Installer    : compile installer.iss with Inno Setup
+echo   REMINDER     : Users must download ffmpeg.exe separately.
+echo   See README for the ffmpeg download link.
 echo =======================================================
 echo.
 popd
