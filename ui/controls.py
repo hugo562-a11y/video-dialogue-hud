@@ -108,14 +108,25 @@ class ControlsMixin:
     def start_preview_playback(self, play_edited=False):
         if self.preview_playing:
             return
-        self._play_edited = play_edited
-        if play_edited:
-            # 即時計算剪切範圍，不需等到匯出才有 cut_ranges
-            self.renderer.set_cut_ranges(
-                self.renderer.data_processor.get_export_cut_ranges(self.get_video_duration())
-            )
-        self.preview_playing = True
+        self._play_kept_ranges = None
+        fps = self.renderer.fps or 30
         start_frame = int(float(self.slider_timeline.get()))
+
+        if play_edited:
+            kept = self.renderer.data_processor.get_kept_time_ranges()
+            start_secs = frame_to_seconds(start_frame, fps)
+            # 只保留還沒播到的句子範圍
+            remaining = [(s, e) for s, e in kept if e > start_secs]
+            if not remaining:
+                self.log("沒有可播放的句子。")
+                return
+            self._play_kept_ranges = remaining
+            # 若目前位置在第一句之前，先跳過去
+            first_start = remaining[0][0]
+            if start_secs < first_start:
+                start_frame = max(1, int(first_start * fps) + 1)
+
+        self.preview_playing = True
         self._preview_play_start_frame = start_frame
 
         # 開一個獨立的循序讀取 cap，播放時不用每幀 seek
@@ -129,13 +140,14 @@ class ControlsMixin:
                 self._play_seq_cap = _cap
 
         self.start_preview_audio()
-        # +0.12s 補償 ffplay 啟動延遲，讓畫面等聲音就緒後再推進
-        self._preview_play_start_time = time.perf_counter() + 0.12
+        # +0.18s 補償 ffplay 啟動延遲，讓畫面等聲音就緒後再推進
+        self._preview_play_start_time = time.perf_counter() + 0.18
         self._last_playback_ui_sync_time = 0.0
         self._play_preview_step()
 
     def stop_preview_playback(self):
         self.preview_playing = False
+        self._play_kept_ranges = None
         if self._preview_play_after_id is not None:
             try:
                 self.after_cancel(self._preview_play_after_id)
@@ -158,23 +170,6 @@ class ControlsMixin:
 
         cap = getattr(self, "_play_seq_cap", None)
 
-        # 播放剪後：遇到剪掉段落跳過，循序 cap 也一起 seek 到跳轉點
-        if getattr(self, "_play_edited", False) and self.renderer.cut_ranges:
-            current_secs = (target_frame - 1) / fps
-            for s, e in self.renderer.cut_ranges:
-                if s <= current_secs < e:
-                    jump = max(1, min(total, int(e * fps) + 1))
-                    if cap is not None:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, jump - 1))
-                        self._play_seq_idx = jump
-                    self._preview_play_start_frame = jump
-                    self._preview_play_start_time  = time.perf_counter() + 0.12
-                    self.slider_timeline.set(jump)
-                    self.stop_audio_preview()
-                    self.start_preview_audio()
-                    target_frame = jump
-                    break
-
         # 循序讀幀追上 target_frame：落後時跳幀，超前時什麼都不做
         cv_frame     = None
         actual_frame = max(1, self._play_seq_idx - 1)
@@ -192,6 +187,30 @@ class ControlsMixin:
         if actual_frame >= total:
             self.stop_preview_playback()
             return
+
+        # 播放剪後：播完這句就跳到下一句，略過中間無聲段
+        kept = getattr(self, "_play_kept_ranges", None)
+        if kept is not None and kept:
+            _, range_end_secs = kept[0]
+            current_secs = frame_to_seconds(actual_frame, fps)
+            if current_secs >= range_end_secs:
+                kept.pop(0)
+                if not kept:
+                    self.stop_preview_playback()
+                    return
+                next_start, _ = kept[0]
+                jump = max(1, min(total, int(next_start * fps) + 1))
+                if cap is not None:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, jump - 1))
+                    self._play_seq_idx = jump
+                self._preview_play_start_frame = jump
+                self.slider_timeline.set(jump)
+                self.stop_audio_preview()
+                self.start_preview_audio()
+                self._preview_play_start_time  = time.perf_counter() + 0.18
+                delay_ms = max(8, int(1000 / min(fps, 60)))
+                self._preview_play_after_id = self.after(delay_ms, self._play_preview_step)
+                return
 
         now = time.perf_counter()
         self.slider_timeline.set(actual_frame)
@@ -267,14 +286,43 @@ class ControlsMixin:
     def play_audio_preview(self, frame_idx, duration=0.35, force=False):
         if not self.renderer.video_path or not self.renderer.fps:
             return
-        ffplay = shutil.which("ffplay")
-        if not ffplay:
-            return
         seconds = frame_to_seconds(frame_idx, self.renderer.fps)
         if not force and abs(seconds - self._last_audio_preview_at) < 0.12:
             return
         self._last_audio_preview_at = seconds
         self.stop_audio_preview()
+
+        # Fast path: play in-memory WAV clip from pre-extracted waveform audio.
+        # winsound has near-zero startup latency vs ~150ms for a new ffplay process.
+        wav_path = getattr(self, "_waveform_audio_path", None)
+        if wav_path and os.path.exists(wav_path) and os.name == "nt":
+            try:
+                import wave, winsound, io
+                with wave.open(wav_path, "rb") as wf:
+                    sr  = wf.getframerate()
+                    ch  = wf.getnchannels()
+                    sw  = wf.getsampwidth()
+                    tot = wf.getnframes()
+                    start_s = max(0, min(int(seconds * sr), tot))
+                    n_s     = min(int(duration * sr), tot - start_s)
+                    if n_s <= 0:
+                        return
+                    wf.setpos(start_s)
+                    raw = wf.readframes(n_s)
+                buf = io.BytesIO()
+                with wave.open(buf, "wb") as out_wf:
+                    out_wf.setnchannels(ch)
+                    out_wf.setsampwidth(sw)
+                    out_wf.setframerate(sr)
+                    out_wf.writeframes(raw)
+                winsound.PlaySound(buf.getvalue(), winsound.SND_MEMORY | winsound.SND_ASYNC)
+                return
+            except Exception:
+                pass  # fall through to ffplay
+
+        ffplay = shutil.which("ffplay")
+        if not ffplay:
+            return
         cmd = [
             ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet", "-vn",
             "-ss", f"{seconds:.2f}",
@@ -308,6 +356,12 @@ class ControlsMixin:
                 pass
 
     def stop_audio_preview(self):
+        if os.name == "nt":
+            try:
+                import winsound
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:
+                pass
         proc = self._ffplay_process
         self._ffplay_process = None
         if proc and proc.poll() is None:
@@ -481,6 +535,21 @@ class ControlsMixin:
             )
         self._refresh_canvas()
 
+    def _toggle_adjust_box_mode(self):
+        if self._canvas_mode == "adjust_box":
+            self._canvas_mode = "pan"
+            self.preview_canvas.configure(cursor="crosshair")
+            if hasattr(self, "btn_adjust_boxes"):
+                self.btn_adjust_boxes.configure(fg_color="#374151", hover_color="#4B5563")
+            self.log("已結束調整框位模式。")
+        else:
+            self._canvas_mode = "adjust_box"
+            self._adjust_box_drag_tid = None
+            self.preview_canvas.configure(cursor="crosshair")
+            if hasattr(self, "btn_adjust_boxes"):
+                self.btn_adjust_boxes.configure(fg_color="#7C3AED", hover_color="#6D28D9")
+            self.log("調整框位模式：拖曳人物框可修正位置，完成後再按一次結束。")
+
     def _set_play_buttons_state(self, state: str):
         if hasattr(self, "btn_play_all"):
             self.btn_play_all.configure(state=state)
@@ -581,11 +650,24 @@ class ControlsMixin:
         self.entry_id.insert(0, str(matched_tid))
         self.entry_speaker.delete(0, "end")
         self.entry_speaker.insert(0, row_speaker or speaker)
-        self.entry_text.delete(0, "end")
-        self.entry_text.insert(0, row_text or text)
+        try:
+            _focused = self.focus_get()
+            _inner = getattr(self.entry_text, "_entry", None)
+            _typing = _focused is not None and (_focused is _inner or _focused is self.entry_text)
+        except Exception:
+            _typing = False
+        if not _typing:
+            self.entry_text.delete(0, "end")
+            self.entry_text.insert(0, row_text or text)
         self._loading_person_fields = False
         if previous_row != self.selected_dialogue_row:
             self.update_script_selection_styles()
+            if hasattr(self, "_sync_scroll_after_id"):
+                try:
+                    self.after_cancel(self._sync_scroll_after_id)
+                except Exception:
+                    pass
+            self._sync_scroll_after_id = self.after(180, self._scroll_to_selected_row)
 
     # ------------------------------------------------------------------ 關閉
     def on_close(self):

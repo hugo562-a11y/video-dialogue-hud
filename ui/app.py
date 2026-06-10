@@ -51,6 +51,9 @@ class App(
         self._bubble_drag_tid = None
         self._bubble_drag_start_canvas = (0, 0)
         self._bubble_drag_start_offset = (0, 0)
+        self._adjust_box_drag_tid = None
+        self._adjust_box_orig_bbox = None
+        self._adjust_box_corner = None   # "tl","tr","bl","br" = resize corner; None = move
         self.preview_boxes = []
         self.preview_scale_x = 1.0
         self.preview_scale_y = 1.0
@@ -363,7 +366,22 @@ class App(
             fg_color="#374151", hover_color="#4B5563",
             command=self._toggle_person_boxes,
         )
-        self.btn_toggle_boxes.pack(side="left")
+        self.btn_toggle_boxes.pack(side="left", padx=(0, 4))
+
+        self.btn_adjust_boxes = ctk.CTkButton(
+            _btn_row, text="調整框位", width=80, height=28,
+            fg_color="#374151", hover_color="#4B5563",
+            command=self._toggle_adjust_box_mode,
+        )
+        self.btn_adjust_boxes.pack(side="left", padx=(0, 4))
+
+        self.btn_rescan_here = ctk.CTkButton(
+            _btn_row, text="從此追蹤", width=80, height=28,
+            fg_color="#92400E", hover_color="#B45309",
+            command=self.start_rescan_from_here,
+            state="disabled",
+        )
+        self.btn_rescan_here.pack(side="left")
 
         # 時間資訊：播放頭 | 剪後時長 | 全部時長
         self.lbl_duration_info = ctk.CTkLabel(

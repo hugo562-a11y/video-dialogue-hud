@@ -677,6 +677,139 @@ class VideoRenderer:
             ),
         }
 
+    def rescan_from_frame(self, start_frame: int, seed_boxes: list):
+        """從 start_frame 重新追蹤到結尾，保留 start_frame 之前的 tracking_data。
+        seed_boxes: [{"id": orig_id, "bbox": (x1,y1,x2,y2)}, ...] 已校正的起始框位。
+        """
+        # 清除 start_frame 之後的舊資料
+        for k in [k for k in self.tracking_data if k >= start_frame]:
+            del self.tracking_data[k]
+
+        self.is_processing = True
+        self.ensure_model()
+
+        # 重設 YOLO tracker（讓 ID 從頭計起，避免舊 state 干擾）
+        if hasattr(self.yolo_model, "predictor") and self.yolo_model.predictor is not None:
+            self.yolo_model.predictor = None
+
+        safe_path = get_safe_path(self.video_path)
+        cap = cv2.VideoCapture(safe_path)
+        if not cap.isOpened():
+            self.is_processing = False
+            if self.ui_callback:
+                self.ui_callback("scan_finished", 1.0)
+                self.ui_callback("progress", 1.0)
+            return
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame - 1)
+        frame_count = start_frame - 1
+        id_map: dict = {}   # 新 YOLO ID → 原始 person ID
+        first_frame_done = False
+
+        if self.ui_callback:
+            self.ui_callback("error_log", f"從第 {start_frame} 幀重新追蹤（種子框 {len(seed_boxes)} 個）。")
+
+        try:
+            while cap.isOpened() and self.is_processing:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame_count += 1
+                try:
+                    results = self._yolo_track(frame, persist=True, tracker="bytetrack.yaml",
+                                               classes=[0], verbose=False)
+                    boxes_list = []
+                    if results and results[0].boxes is not None and results[0].boxes.id is not None:
+                        raw_boxes = results[0].boxes.xyxy.cpu().numpy()
+                        track_ids = results[0].boxes.id.cpu().int().numpy()
+                        confs = results[0].boxes.conf.cpu().numpy()
+                        frame_area = frame.shape[0] * frame.shape[1]
+                        min_box_area = frame_area * 0.008
+
+                        if not first_frame_done:
+                            # 第一幀：將新偵測到的 YOLO ID 對應到種子框的原始 ID
+                            first_frame_done = True
+                            detections = []
+                            for box, tid, conf in zip(raw_boxes, track_ids, confs):
+                                if conf < 0.35:
+                                    continue
+                                x1, y1, x2, y2 = box
+                                detections.append({
+                                    "new_id": int(tid),
+                                    "cx": (x1 + x2) / 2,
+                                    "cy": (y1 + y2) / 2,
+                                    "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                                })
+                            used = set()
+                            max_dist = max(self.video_width, self.video_height, 1) * 0.5
+                            for seed in seed_boxes:
+                                sx1, sy1, sx2, sy2 = seed["bbox"]
+                                scx = (sx1 + sx2) / 2
+                                scy = (sy1 + sy2) / 2
+                                best, best_d = None, 1e9
+                                for det in detections:
+                                    if det["new_id"] in used:
+                                        continue
+                                    d = abs(scx - det["cx"]) + abs(scy - det["cy"])
+                                    if d < best_d:
+                                        best_d, best = d, det
+                                if best is not None and best_d < max_dist:
+                                    id_map[best["new_id"]] = seed["id"]
+                                    used.add(best["new_id"])
+
+                        known_ids = set(self.yolo_id_to_speaker.keys())
+                        prev_boxes = self.tracking_data.get(frame_count - 1, [])
+                        max_dist = max(self.video_width, self.video_height, 1) * 0.3
+                        for box, track_id, conf in zip(raw_boxes, track_ids, confs):
+                            if conf < 0.45:
+                                continue
+                            x1, y1, x2, y2 = box
+                            if (x2 - x1) * (y2 - y1) < min_box_area:
+                                continue
+                            new_id = int(track_id)
+                            # 若是還沒見過的 YOLO ID，嘗試按上一幀位置補入 id_map
+                            if new_id not in id_map:
+                                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+                                already_mapped = set(id_map.values())
+                                best_oid, best_d = None, max_dist
+                                for pb in prev_boxes:
+                                    oid = pb["id"]
+                                    if oid not in known_ids or oid in already_mapped:
+                                        continue
+                                    px1, py1, px2, py2 = pb["bbox"]
+                                    d = abs(cx - (px1+px2)/2) + abs(cy - (py1+py2)/2)
+                                    if d < best_d:
+                                        best_d, best_oid = d, oid
+                                if best_oid is not None:
+                                    id_map[new_id] = best_oid
+                            mapped_id = id_map.get(new_id)
+                            if mapped_id is None or mapped_id not in known_ids:
+                                continue
+                            head_h = min(int((x2 - x1) * 1.05), int((y2 - y1) * 0.42), int(y2 - y1))
+                            boxes_list.append({"id": mapped_id, "bbox": (int(x1), int(y1), int(x2), int(y1 + head_h))})
+
+                    elif not first_frame_done:
+                        # 第一幀沒偵測到：直接用種子框
+                        first_frame_done = True
+                        boxes_list = [{"id": s["id"], "bbox": s["bbox"]} for s in seed_boxes]
+
+                    self.tracking_data[frame_count] = boxes_list
+                except Exception as exc:
+                    if self.ui_callback:
+                        self.ui_callback("error_log", f"[重掃 frame={frame_count}] {exc}")
+                    continue
+
+                if self.ui_callback and frame_count % 5 == 0:
+                    self.ui_callback("progress", min(frame_count / max(self.total_frames, 1), 1.0))
+        finally:
+            cap.release()
+            self.bubble_cache.clear()
+            self.is_processing = False
+            if self.ui_callback:
+                self.ui_callback("error_log", f"重新追蹤完畢（共 {frame_count - start_frame + 1} 幀）。")
+                self.ui_callback("scan_finished", 1.0)
+                self.ui_callback("progress", 1.0)
+
     def set_cut_ranges(self, ranges):
         self.cut_ranges = normalize_time_ranges(ranges)
 

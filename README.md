@@ -44,6 +44,74 @@ Automatically track speakers in a video, overlay dialogue as speech bubbles, and
 | ffmpeg | 需加入系統 PATH · Must be on system PATH → [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/) 下載 `ffmpeg-release-essentials.zip` |
 | 顯示卡 · GPU | 非必要。有 NVIDIA GPU 時自動啟用 CUDA 加速；無 GPU 則自動改用 CPU，掃描速度較慢但功能完整 · Optional. NVIDIA GPU enables CUDA acceleration automatically; without one the app falls back to CPU — slower but fully functional |
 
+### ffmpeg 安裝白話版 · Windows
+
+`ffmpeg` 不是 Python 套件，不能靠 `pip install` 安裝。它是一個外部影片/音訊工具，本程式需要用它來讀取音訊、產生波形、合成匯出影片。
+
+**1. 下載**
+
+到 [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/) 下載：
+
+```text
+ffmpeg-release-essentials.zip
+```
+
+**2. 解壓縮**
+
+把 zip 解壓縮到一個固定位置，例如：
+
+```text
+C:\ffmpeg
+```
+
+解壓後請確認這個檔案存在：
+
+```text
+C:\ffmpeg\bin\ffmpeg.exe
+```
+
+如果你解壓後看到的是類似 `C:\ffmpeg\ffmpeg-7.x.x-essentials_build\bin\ffmpeg.exe`，也可以，但等一下加入 PATH 時要加入實際的 `bin` 資料夾。
+
+**3. 讓 Windows 找得到 ffmpeg**
+
+這一步的意思是：告訴 Windows「`ffmpeg.exe` 放在哪個資料夾」。只要設定一次，以後本工具就能自動找到它。
+
+1. 按 Windows 開始選單，搜尋「環境變數」。
+2. 點「編輯系統環境變數」。
+3. 點右下角「環境變數」。
+4. 在「系統變數」或「使用者變數」找到 `Path`，按「編輯」。
+5. 按「新增」，貼上剛才解壓出來、裡面有 `ffmpeg.exe` 的資料夾路徑。例如：
+
+```text
+C:\ffmpeg\bin
+```
+
+6. 一路按「確定」關閉所有視窗。
+
+如果你的 `ffmpeg.exe` 不是放在 `C:\ffmpeg\bin`，請不要照抄上面那行。請到檔案總管找到 `ffmpeg.exe`，點上方資料夾路徑列，複製那個資料夾路徑，貼到 `Path` 裡。
+
+**4. 確認安裝成功**
+
+最簡單的確認方式：
+
+1. 關掉本工具的啟動器視窗。
+2. 重新雙擊 `launch.bat`。
+3. 如果 `ffmpeg（影片合成）` 變成綠色勾勾，就代表成功。
+
+如果你會用命令提示字元，也可以用這個方式確認：
+
+1. 按 Windows 開始選單，搜尋 `cmd`。
+2. 開啟「命令提示字元」。
+3. 輸入：
+
+```bat
+ffmpeg -version
+```
+
+如果有看到版本資訊，就代表安裝成功。接著重新執行本工具的 `launch.bat`。
+
+如果啟動器仍然顯示 ffmpeg 未找到，通常是剛才貼到 `Path` 的資料夾不對；請確認貼的是「包含 `ffmpeg.exe` 的資料夾」，不是 zip 檔，也不是上一層資料夾。
+
 ### 安裝步驟 · Steps
 
 **1. 複製專案 · Clone**

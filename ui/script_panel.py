@@ -277,16 +277,17 @@ class ScriptPanelMixin:
 
     def _do_scroll_to_widget(self, frame):
         try:
-            scroll_canvas = self.script_scroll._parent_canvas
-            self.script_scroll.update_idletasks()
-            fy = frame.winfo_y()
-            total_h = self.script_scroll._scrollable_frame.winfo_height()
-            canvas_h = scroll_canvas.winfo_height()
-            if total_h <= canvas_h:
+            canvas = self.script_scroll._parent_canvas
+            bbox = canvas.bbox("all")
+            if not bbox:
                 return
-            # 讓目標行顯示在捲動視窗約 30% 處
-            pos = max(0.0, min(1.0, (fy - canvas_h * 0.30) / total_h))
-            scroll_canvas.yview_moveto(pos)
+            content_h = bbox[3]          # 全部內容高度（scrollregion）
+            canvas_h = canvas.winfo_height()
+            if content_h <= canvas_h:
+                return
+            fy = frame.winfo_y()         # row 在 content 裡的 y 位置
+            target = max(0.0, min(1.0, (fy - canvas_h * 0.30) / content_h))
+            canvas.yview_moveto(target)
         except Exception:
             pass
 

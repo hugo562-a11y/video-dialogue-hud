@@ -68,7 +68,17 @@ class PreviewMixin:
         x1, y1, x2, y2 = rect
         color = self.renderer.bubble_color_hex(tid)
         text_color = self.renderer.bubble_text_hex(tid)
-        self.preview_canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=1)
+        in_adjust = self._canvas_mode == "adjust_box"
+        line_w = 2 if in_adjust else 1
+        self.preview_canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=line_w)
+        # 調整框位模式下，畫四個角落的拖拉控點
+        if in_adjust:
+            h = 5
+            for cx, cy in ((x1, y1), (x2, y1), (x1, y2), (x2, y2)):
+                self.preview_canvas.create_rectangle(
+                    cx - h, cy - h, cx + h, cy + h,
+                    fill=color, outline="#FFFFFF", width=1,
+                )
         text_id = self.preview_canvas.create_text(
             x1 + 5, y1 + 4, anchor="nw",
             text=label, fill=text_color,
@@ -122,6 +132,15 @@ class PreviewMixin:
         if self._canvas_mode == "bubble":
             self.preview_canvas.configure(cursor="fleur")
             return
+        if self._canvas_mode == "adjust_box":
+            result = self._hit_box_corner(event.x, event.y)
+            if result is None:
+                self.preview_canvas.configure(cursor="crosshair")
+            elif result[1] == "move":
+                self.preview_canvas.configure(cursor="fleur")
+            else:
+                self.preview_canvas.configure(cursor="sizing")
+            return
         if self._hit_bubble(event.x, event.y) is not None:
             self.preview_canvas.configure(cursor="hand2")
         elif self._hit_box(event.x, event.y) is not None:
@@ -145,6 +164,21 @@ class PreviewMixin:
                 self.push_undo_state("移動字幕泡泡")
                 self._bubble_drag_start_canvas = (event.x, event.y)
                 self._bubble_drag_start_offset = self.renderer.bubble_offsets.get(self._bubble_drag_tid, (0, 0))
+        elif self._canvas_mode == "adjust_box":
+            result = self._hit_box_corner(event.x, event.y)
+            if result is not None:
+                tid, corner = result
+                for box in self.preview_boxes:
+                    if box["id"] == tid:
+                        self._adjust_box_drag_tid = tid
+                        self._adjust_box_corner = corner
+                        self._adjust_box_orig_bbox = tuple(box["bbox"])
+                        cursor = "fleur" if corner == "move" else "sizing"
+                        self.preview_canvas.configure(cursor=cursor)
+                        break
+            else:
+                self._adjust_box_drag_tid = None
+                self._adjust_box_corner = None
         else:
             bubble_tid = self._hit_bubble(event.x, event.y)
             if bubble_tid is not None:
@@ -176,6 +210,29 @@ class PreviewMixin:
             if hasattr(self, "_drag_preview_after_id"):
                 self.after_cancel(self._drag_preview_after_id)
             self._drag_preview_after_id = self.after(30, lambda: self.on_timeline_scrub(self.slider_timeline.get()))
+        elif self._canvas_mode == "adjust_box" and self._adjust_box_drag_tid is not None:
+            dvx = dx / max(self.preview_scale_x * self.preview_zoom, 1e-6)
+            dvy = dy / max(self.preview_scale_y * self.preview_zoom, 1e-6)
+            ox1, oy1, ox2, oy2 = self._adjust_box_orig_bbox
+            corner = getattr(self, "_adjust_box_corner", None)
+            if corner == "tl":
+                new_bbox = (ox1 + dvx, oy1 + dvy, ox2, oy2)
+            elif corner == "tr":
+                new_bbox = (ox1, oy1 + dvy, ox2 + dvx, oy2)
+            elif corner == "bl":
+                new_bbox = (ox1 + dvx, oy1, ox2, oy2 + dvy)
+            elif corner == "br":
+                new_bbox = (ox1, oy1, ox2 + dvx, oy2 + dvy)
+            else:
+                new_bbox = (ox1 + dvx, oy1 + dvy, ox2 + dvx, oy2 + dvy)
+            # 確保 x1<x2, y1<y2
+            nx1, ny1, nx2, ny2 = new_bbox
+            new_bbox = (min(nx1, nx2), min(ny1, ny2), max(nx1, nx2), max(ny1, ny2))
+            for box in self.preview_boxes:
+                if box["id"] == self._adjust_box_drag_tid:
+                    box["bbox"] = new_bbox
+                    break
+            self._refresh_canvas()
         else:
             self.canvas_offset[0] = self._drag_offset_start[0] + dx
             self.canvas_offset[1] = self._drag_offset_start[1] + dy
@@ -202,6 +259,31 @@ class PreviewMixin:
             self.preview_canvas.configure(
                 cursor="hand2" if self._hit_bubble(event.x, event.y) is not None else "crosshair"
             )
+        elif self._canvas_mode == "adjust_box":
+            if self._adjust_box_drag_tid is not None and self._drag_moved:
+                tid = self._adjust_box_drag_tid
+                try:
+                    frame_idx = int(float(self.slider_timeline.get()))
+                except Exception:
+                    frame_idx = 1
+                for box in self.preview_boxes:
+                    if box["id"] == tid:
+                        x1, y1, x2, y2 = box["bbox"]
+                        new_bbox = (int(x1), int(y1), int(x2), int(y2))
+                        if frame_idx in self.renderer.tracking_data:
+                            for td in self.renderer.tracking_data[frame_idx]:
+                                if td["id"] == tid:
+                                    td["bbox"] = new_bbox
+                                    break
+                            else:
+                                self.renderer.tracking_data[frame_idx].append({"id": tid, "bbox": new_bbox})
+                        else:
+                            self.renderer.tracking_data[frame_idx] = [{"id": tid, "bbox": new_bbox}]
+                        self.renderer.bubble_cache.clear()
+                        self.log(f"已更新人物 {tid} 在第 {frame_idx} 格的框位。")
+                        break
+            self._adjust_box_drag_tid = None
+            self.preview_canvas.configure(cursor="crosshair")
         elif not self._drag_moved:
             self.on_preview_click(event)
 
@@ -269,6 +351,22 @@ class PreviewMixin:
             x1, y1, x2, y2 = roi
             if x1 <= vx <= x2 and y1 <= vy <= y2:
                 return idx
+        return None
+
+    def _hit_box_corner(self, cx: float, cy: float):
+        """Returns (tid, corner) where corner is 'tl','tr','bl','br' or 'move'. None if no hit."""
+        vx, vy = self._canvas_to_video(cx, cy)
+        # corner grab radius in video pixels
+        r = 12 / max(self.preview_scale_x * self.preview_zoom, 1e-6)
+        for box in self.preview_boxes:
+            x1, y1, x2, y2 = box["bbox"]
+            tid = box["id"]
+            for corner, (bx, by) in (("tl", (x1, y1)), ("tr", (x2, y1)),
+                                      ("bl", (x1, y2)), ("br", (x2, y2))):
+                if abs(vx - bx) <= r and abs(vy - by) <= r:
+                    return tid, corner
+            if x1 <= vx <= x2 and y1 <= vy <= y2:
+                return tid, "move"
         return None
 
     # ------------------------------------------------------------------ 點擊動作

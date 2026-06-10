@@ -91,6 +91,12 @@ class WorkflowMixin:
             self.btn_play_all.configure(state="disabled")
         if hasattr(self, "btn_play_edited"):
             self.btn_play_edited.configure(state="disabled")
+        if hasattr(self, "btn_adjust_boxes"):
+            self.btn_adjust_boxes.configure(fg_color="#374151", hover_color="#4B5563")
+        if hasattr(self, "btn_rescan_here"):
+            self.btn_rescan_here.configure(state="disabled")
+        self._canvas_mode = "pan"
+        self._adjust_box_drag_tid = None
         if hasattr(self, "btn_scan"):
             self.btn_scan.configure(state="disabled")
         if hasattr(self, "btn_speech"):
@@ -593,23 +599,74 @@ class WorkflowMixin:
 
     def on_scan_finished(self):
         self.btn_scan.configure(state="normal", text="5  重新掃描人物")
+        if hasattr(self, "btn_rescan_here"):
+            self.btn_rescan_here.configure(state="normal" if self.renderer.tracking_data else "disabled")
         if self.renderer.tracking_data:
             self.slider_timeline.configure(state="normal", from_=1, to=max(1, self.renderer.total_frames))
             self._set_play_buttons_state("normal")
-            self.slider_timeline.set(1)
             if hasattr(self, "btn_export_preview"):
                 self.btn_export_preview.configure(state="normal")
             self.btn_export.configure(state="normal")
             self.set_workflow_stage("export", "人物掃描完成。抽查字幕與泡泡位置，確認後匯出。")
             self.btn_scan.configure(text="重新掃描人物")
             self.btn_export.configure(text="匯出完成品")
-            first_frame = next((idx for idx, boxes in self.renderer.tracking_data.items() if boxes), 1)
-            self.slider_timeline.set(first_frame)
-            self.on_timeline_scrub(first_frame)
             ids = sorted({box["id"] for boxes in self.renderer.tracking_data.values() for box in boxes})
-            self.log(f"掃描完成，偵測 ID：{', '.join(map(str, ids)) if ids else '無'}")
+            # rescan：回到觸發點；初次掃描：跳到第一個有框的幀
+            return_frame = getattr(self, "_rescan_return_frame", None)
+            self._rescan_return_frame = None
+            if return_frame is not None:
+                go_to = return_frame
+                self.log(f"重新追蹤完成，偵測 ID：{', '.join(map(str, ids)) if ids else '無'}")
+            else:
+                go_to = next((idx for idx, boxes in self.renderer.tracking_data.items() if boxes), 1)
+                self.log(f"掃描完成，偵測 ID：{', '.join(map(str, ids)) if ids else '無'}")
+            self.slider_timeline.set(go_to)
+            self.on_timeline_scrub(go_to)
         else:
             self.log("掃描完成，但沒有偵測到人物。")
+
+    def start_rescan_from_here(self):
+        """從目前播放頭位置重新追蹤到結尾，以目前幀的框位為起點。"""
+        if not self.renderer.video_path:
+            messagebox.showinfo(APP_TITLE, "請先選擇影片。")
+            return
+        if not self.renderer.tracking_data:
+            messagebox.showinfo(APP_TITLE, "請先完成初次掃描。")
+            return
+        try:
+            frame_idx = int(float(self.slider_timeline.get()))
+        except Exception:
+            frame_idx = 1
+        seed_boxes = list(self.preview_boxes)
+        if not seed_boxes:
+            seed_boxes = list(self.renderer.tracking_data.get(frame_idx, []))
+        if not seed_boxes:
+            messagebox.showinfo(APP_TITLE, "目前幀沒有可用的人物框，請先調整框位或選擇有框的幀。")
+            return
+        if not messagebox.askyesno(
+            APP_TITLE,
+            f"將從第 {frame_idx} 幀（{len(seed_boxes)} 個人物）重新追蹤到結尾。\n"
+            f"第 {frame_idx} 幀之前的追蹤資料會保留。\n確定執行？"
+        ):
+            return
+        self.stop_preview_playback()
+        self._rescan_return_frame = frame_idx   # 完成後回到這幀
+        self.btn_scan.configure(state="disabled", text="追蹤中...")
+        if hasattr(self, "btn_rescan_here"):
+            self.btn_rescan_here.configure(state="disabled")
+        if hasattr(self, "btn_export_preview"):
+            self.btn_export_preview.configure(state="disabled")
+        self.btn_export.configure(state="disabled")
+        self.slider_timeline.configure(state="disabled")
+        self._set_play_buttons_state("disabled")
+        self.progress_bar.set(0)
+        self.log(f"從第 {frame_idx} 幀開始重新追蹤…")
+        seed_copy = [{"id": b["id"], "bbox": tuple(b["bbox"])} for b in seed_boxes]
+        threading.Thread(
+            target=self.renderer.rescan_from_frame,
+            args=(frame_idx, seed_copy),
+            daemon=True,
+        ).start()
 
     # ------------------------------------------------------------------ 匯出
     def _sync_selected_person_fields(self):
