@@ -22,22 +22,32 @@ class EditingMixin:
             messagebox.showinfo(APP_TITLE, "這句太短，無法斷句。")
             return
         self.push_undo_state("切斷句")
+        original_row_idx = self.selected_dialogue_row
         success, message, new_row_idx = self.renderer.data_processor.split_dialogue_row(
-            self.selected_dialogue_row, cursor_pos
+            self.selected_dialogue_row, cursor_pos, reset_index=False
         )
         self.log(message)
         if not success:
             messagebox.showinfo(APP_TITLE, message)
             return
         self.renderer.bubble_cache.clear()
-        self.selected_dialogue_row = new_row_idx
-        self.refresh_script_panel()
-        if self.slider_timeline.cget("state") == "normal":
-            self.refresh_current_preview()
-        try:
-            self.select_person(int(self.entry_id.get()))
-        except Exception:
-            pass
+        updated = False
+        if hasattr(self, "update_script_row_from_data"):
+            updated = self.update_script_row_from_data(original_row_idx)
+        if hasattr(self, "insert_script_row_from_data"):
+            updated = self.insert_script_row_from_data(new_row_idx, after_row_idx=original_row_idx) and updated
+        if not updated:
+            self.refresh_script_panel()
+        if hasattr(self, "select_dialogue_row"):
+            self.select_dialogue_row(new_row_idx, seek=False, scroll=False, redraw_waveform=False)
+        else:
+            self.selected_dialogue_row = new_row_idx
+            self.update_current_sentence_label()
+            self.refresh_script_action_buttons()
+        if hasattr(self, "schedule_waveform_refresh"):
+            self.schedule_waveform_refresh(delay_ms=160)
+        if hasattr(self, "schedule_script_preview_refresh"):
+            self.schedule_script_preview_refresh(delay_ms=350)
 
     def add_sentence_at_current_time(self):
         if not self.renderer.video_path:
@@ -139,7 +149,10 @@ class EditingMixin:
         self.push_undo_state("微調句子時間")
         if dp.update_dialogue_time(row_idx, start, end):
             self.selected_dialogue_row = row_idx
-            self.refresh_script_panel()
+            if hasattr(self, "update_script_row_from_data") and self.update_script_row_from_data(row_idx):
+                self.draw_waveform(self.current_frame())
+            else:
+                self.refresh_script_panel()
             self.select_dialogue_row(row_idx, seek=False)
             self.refresh_current_preview()
         return "break"

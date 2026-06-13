@@ -105,3 +105,59 @@ def find_column(columns, candidates: list[str]):
             if candidate in low:
                 return col
     return None
+
+
+class ToolTip:
+    delay_ms = 400
+
+    def __init__(self, widget, text: str):
+        self._widget = widget
+        self._text = text
+        self._tw = None
+        self._after_id = None
+        widget.bind("<Enter>", self._on_enter, add=True)
+        widget.bind("<Leave>", self._on_leave, add=True)
+
+    def _on_enter(self, _event=None):
+        self._after_id = self._widget.after(self.delay_ms, self._show)
+
+    def _on_leave(self, _event=None):
+        self._hide()
+        if self._after_id:
+            try:
+                self._widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self):
+        if self._tw:
+            return
+        import tkinter as tk
+        self._tw = tk.Toplevel(self._widget)
+        self._tw.wm_overrideredirect(True)
+        self._tw.attributes("-topmost", True)
+        self._tw.configure(bg="#333333")
+        label = tk.Label(
+            self._tw, text=self._text,
+            fg="#F0F0F0", bg="#333333", font=("Microsoft JhengHei UI", 10),
+            padx=6, pady=2,
+        )
+        label.pack()
+        self._tw.update_idletasks()
+        x = self._widget.winfo_rootx()
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 2
+        # Keep within screen bounds
+        sw = self._widget.winfo_screenwidth()
+        tw = self._tw.winfo_reqwidth()
+        if x + tw > sw:
+            x = sw - tw - 4
+        self._tw.geometry(f"+{x}+{y}")
+
+    def _hide(self):
+        if self._tw:
+            try:
+                self._tw.destroy()
+            except Exception:
+                pass
+            self._tw = None

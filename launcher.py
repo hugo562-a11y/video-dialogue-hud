@@ -13,9 +13,9 @@ import shutil
 import importlib
 import webbrowser
 import tkinter as tk
-from pathlib import Path
+import pathlib
 
-ROOT   = Path(__file__).parent
+ROOT   = pathlib.Path(__file__).parent
 PYTHON = sys.executable
 
 # ── 顏色 ──────────────────────────────────────────────────────────────────────

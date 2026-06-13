@@ -63,6 +63,9 @@ coverage.xml
 *.ttf
 *.ttc
 
+# ── Sample data files ─────────────────────────────────────────────────────────
+data/
+
 # ── Project: build artefacts ──────────────────────────────────────────────────
 *.spec.bak
 crash_log.txt

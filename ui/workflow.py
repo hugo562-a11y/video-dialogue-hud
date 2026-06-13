@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import traceback
 
 import cv2
 import customtkinter as ctk
@@ -40,11 +41,11 @@ class WorkflowMixin:
             if not label:
                 continue
             if index < active_index:
-                color = "#43E2A8"
+                color = "#46A3FF"
             elif index == active_index:
-                color = "#FBBF24"
+                color = "#F39C12"
             else:
-                color = "#AAB0C0"
+                color = "#999999"
             label.configure(text_color=color)
         if message and hasattr(self, "status_label"):
             self.status_label.configure(text=message)
@@ -63,6 +64,7 @@ class WorkflowMixin:
         self.renderer.person_rois = []
         self.renderer.yolo_id_to_speaker = {}
         self.renderer.expected_people_count = 1
+        self._sync_person_count_spinbox()
         self._speech_segments = None
         self._speech_audio_path = None
         self._clear_waveform_audio_cache()
@@ -92,7 +94,7 @@ class WorkflowMixin:
         if hasattr(self, "btn_play_edited"):
             self.btn_play_edited.configure(state="disabled")
         if hasattr(self, "btn_adjust_boxes"):
-            self.btn_adjust_boxes.configure(fg_color="#374151", hover_color="#4B5563")
+            self.btn_adjust_boxes.configure(fg_color="#383838", hover_color="#4A4A4A")
         if hasattr(self, "btn_rescan_here"):
             self.btn_rescan_here.configure(state="disabled")
         self._canvas_mode = "pan"
@@ -238,17 +240,28 @@ class WorkflowMixin:
         if getattr(self, "_canvas_mode", "pan") == "person_roi":
             # 再按一次 → 退出框選模式
             self._canvas_mode = "pan"
-            self.btn_draw_people.configure(text="框選追踪", fg_color=["#3B8ED0", "#1F6AA5"])
+            self.btn_draw_people.configure(text="框選追踪", fg_color="#4A4A4A", hover_color="#5A5A5A")
             self.log("已結束框選。")
             return
         self._canvas_mode = "person_roi"
-        self.btn_draw_people.configure(text="完成框選 ✓", fg_color="#B94A48")
+        self.btn_draw_people.configure(text="完成框選 ✓")
         self.log("請在預覽畫面框選人物。右鍵點框可刪除。框好所有人後再按「完成框選」。")
+    def _on_person_count_change(self, val):
+        try:
+            self.renderer.expected_people_count = max(1, int(val))
+        except (ValueError, TypeError):
+            pass
+
+    def _sync_person_count_spinbox(self):
+        if hasattr(self, "person_count_var") and hasattr(self.renderer, "expected_people_count"):
+            self.person_count_var.set(str(max(1, self.renderer.expected_people_count)))
+
     def confirm_people_count(self):
         if not self.renderer.person_rois:
             messagebox.showinfo(APP_TITLE, "請先框選人物。")
             return
         self.renderer.expected_people_count = len(self.renderer.person_rois)
+        self._sync_person_count_spinbox()
         for idx in range(1, self.renderer.expected_people_count + 1):
             self.renderer.yolo_id_to_speaker.setdefault(idx, f"人物 {idx}")
         self._update_box_and_scan_state()
@@ -256,6 +269,7 @@ class WorkflowMixin:
 
     def _update_box_and_scan_state(self):
         self.renderer.expected_people_count = max(1, len(self.renderer.person_rois))
+        self._sync_person_count_spinbox()
         if hasattr(self, "btn_scan"):
             self.btn_scan.configure(
                 state="normal" if self.renderer.person_rois and self.renderer.data_processor.has_data() else "disabled"
@@ -287,9 +301,14 @@ class WorkflowMixin:
         self.log("人物框已變更，請重新確認或掃描。")
 
     def clear_person_boxes(self):
+        if self.renderer.person_rois and not messagebox.askyesno(
+            APP_TITLE, "確定要清除所有人物框？\n追蹤資料也會一併清除。"
+        ):
+            return
         self.renderer.person_rois = []
         self.preview_boxes = []
         self.renderer.expected_people_count = 1
+        self._sync_person_count_spinbox()
         self.renderer.tracking_data = {}
         self.btn_clear_people.configure(state="disabled")
         self.btn_speech.configure(state="normal")
@@ -400,7 +419,10 @@ class WorkflowMixin:
         if not self.renderer.video_path:
             messagebox.showinfo(APP_TITLE, "請先選擇影片。")
             return
-        self.renderer.expected_people_count = max(1, len(self.renderer.person_rois))
+        if self.renderer.person_rois:
+            self.renderer.expected_people_count = max(1, len(self.renderer.person_rois))
+        else:
+            self.renderer.expected_people_count = max(1, self.renderer.expected_people_count)
         if self.renderer.expected_people_count == 1 and 1 not in self.renderer.yolo_id_to_speaker:
             self.renderer.yolo_id_to_speaker[1] = "人物 1"
         self.btn_speech.configure(state="disabled", text="辨識中...")
@@ -429,10 +451,11 @@ class WorkflowMixin:
 
             from faster_whisper import WhisperModel
 
-            audio_source_path = getattr(self.renderer, "source_video_path", None) or self.renderer.video_path
+            # Recognition must use the same proxy timeline as preview/waveform.
+            audio_source_path = self.renderer.video_path
             safe_path = get_safe_path(audio_source_path)
             model_size = self.whisper_model_var.get()
-            self.ui_queue.put({"type": "progress", "value": 0.05})
+            self.ui_queue.put({"type": "progress", "value": 0.05, "text": "Whisper 載入中… "})
             try:
                 # Keep the Whisper model cached so repeated recognition does not reload it.
                 cached = getattr(self, "_whisper_model", None)
@@ -452,18 +475,15 @@ class WorkflowMixin:
                 )
                 self._speech_segments = list(segments)
                 self._speech_audio_path = safe_path
-                rows = self._segments_to_rows(
-                    self._speech_segments,
-                    self.renderer.total_frames,
-                    self.renderer.fps,
-                    self.get_silence_seconds(),
-                    self._speech_audio_path,
-                    model,
+                self.ui_queue.put({"type": "progress", "value": 0.50, "text": "整理腳本中… "})
+                rows = self._build_rows_from_segments(
+                    self._speech_segments, safe_path, model,
+                    allow_fallback=True,
                 )
             except RuntimeError as exc:
                 if "cublas" not in str(exc).lower() and "cuda" not in str(exc).lower():
                     raise
-                self.ui_queue.put({"type": "progress", "value": 0.1})
+                self.ui_queue.put({"type": "progress", "value": 0.1, "text": "CPU 模式重試… "})
                 self.ui_queue.put({"type": "error_log", "text": "CUDA 執行失敗，已改用 CPU。"})
                 self._whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
                 self._whisper_model_size = model_size
@@ -479,13 +499,10 @@ class WorkflowMixin:
                 )
                 self._speech_segments = list(segments)
                 self._speech_audio_path = safe_path
-                rows = self._segments_to_rows(
-                    self._speech_segments,
-                    self.renderer.total_frames,
-                    self.renderer.fps,
-                    self.get_silence_seconds(),
-                    self._speech_audio_path,
-                    model,
+                self.ui_queue.put({"type": "progress", "value": 0.50, "text": "整理腳本中… "})
+                rows = self._build_rows_from_segments(
+                    self._speech_segments, safe_path, model,
+                    allow_fallback=True,
                 )
 
             if not rows:
@@ -503,6 +520,7 @@ class WorkflowMixin:
             else:
                 self.ui_queue.put({"type": "error", "text": f"缺少套件：{exc.name}"})
         except Exception as exc:
+            self.ui_queue.put({"type": "error_log", "text": traceback.format_exc()})
             self.ui_queue.put({"type": "error", "text": f"語音辨識失敗：{exc}"})
 
     def on_speech_done(self, rows, out_csv):
@@ -797,10 +815,12 @@ class WorkflowMixin:
         def _dec():
             if spk_count_var.get() > 1:
                 spk_count_var.set(spk_count_var.get() - 1)
+                _update_count()
 
         def _inc():
             if spk_count_var.get() < 12:
                 spk_count_var.set(spk_count_var.get() + 1)
+                _update_count()
 
         ctk.CTkButton(regroup_frame, text="−", width=30, height=30,
                       font=("Arial", 16, "bold"), command=_dec).pack(side="left", padx=(4, 2))
@@ -809,21 +829,25 @@ class WorkflowMixin:
         ctk.CTkButton(regroup_frame, text="+", width=30, height=30,
                       font=("Arial", 16, "bold"), command=_inc).pack(side="left", padx=(2, 8))
 
-        def _regroup():
+        def _update_count():
             new_n = spk_count_var.get()
             self.renderer.expected_people_count = new_n
+            self._sync_person_count_spinbox()
             for i in range(1, new_n + 1):
                 self.renderer.yolo_id_to_speaker.setdefault(i, f"人物 {i}")
-            if getattr(self, "_speech_segments", None):
-                self.reassign_speech_rows()
-            # 重建列表
             for w in scroll.winfo_children():
                 w.destroy()
             rows.clear()
             for tid in range(1, new_n + 1):
                 make_row(tid)
-            self._speaker_mapper_info.configure(text=f"已重新分群為 {new_n} 人，請確認名稱。")
-            self.log(f"已重新分群為 {new_n} 個人物。")
+            self._speaker_mapper_info.configure(text=f"已調整為 {new_n} 人，請確認名稱。")
+
+        def _regroup():
+            _update_count()
+            if getattr(self, "_speech_segments", None):
+                self.reassign_speech_rows()
+            self._speaker_mapper_info.configure(text=f"已重新分群為 {spk_count_var.get()} 人，請確認名稱。")
+            self.log(f"已重新分群為 {spk_count_var.get()} 個人物。")
 
         ctk.CTkButton(regroup_frame, text="重新分群", width=90,
                       command=_regroup).pack(side="left")
@@ -885,6 +909,7 @@ class WorkflowMixin:
         def save():
             self.push_undo_state("更新人物名稱")
             self.renderer.expected_people_count = max(len(rows), 1)
+            self._sync_person_count_spinbox()
             old_speakers = {
                 tid: self.renderer.yolo_id_to_speaker.get(tid, f"人物 {tid}")
                 for tid, _, _, _, _ in rows
@@ -924,6 +949,7 @@ class WorkflowMixin:
         if count is None:
             return
         self.renderer.expected_people_count = max(1, count)
+        self._sync_person_count_spinbox()
         for idx in range(1, self.renderer.expected_people_count + 1):
             self.renderer.yolo_id_to_speaker.setdefault(idx, f"人物 {idx}")
         if getattr(self, "_speech_segments", None):
@@ -1223,18 +1249,90 @@ class WorkflowMixin:
 
             # 階層式聚類 + 固定餘弦距離閾值 0.40
             # 偶爾會多估 1 人，但比低估好修正（用命名視窗的 − 按鈕調回）
-            clustering = AgglomerativeClustering(
-                n_clusters=None,
-                distance_threshold=0.40,
-                metric="cosine",
-                linkage="average",
-            )
+            try:
+                clustering = AgglomerativeClustering(
+                    n_clusters=None,
+                    distance_threshold=0.40,
+                    metric="cosine",
+                    linkage="average",
+                )
+            except TypeError:
+                clustering = AgglomerativeClustering(
+                    n_clusters=None,
+                    distance_threshold=0.40,
+                    affinity="cosine",
+                    linkage="average",
+                )
             labels = clustering.fit_predict(emb_array)
             n_clusters = len(set(labels))
             return max(1, min(n_clusters, max_speakers))
         except Exception as exc:
             self.ui_queue.put({"type": "error_log", "text": f"聲紋估算失敗，先使用 1 個人物：{exc}"})
             return 1
+
+    def _build_rows_from_segments(self, segments, audio_path, model=None, allow_fallback=False):
+        try:
+            return self._segments_to_rows(
+                segments,
+                self.renderer.total_frames,
+                self.renderer.fps,
+                self.get_silence_seconds(),
+                audio_path,
+                model,
+            )
+        except Exception as exc:
+            if not allow_fallback:
+                raise
+            self.ui_queue.put({"type": "error_log", "text": traceback.format_exc()})
+            self.ui_queue.put({
+                "type": "error_log",
+                "text": f"完整腳本後處理失敗，已改用基本腳本：{exc}",
+            })
+            return self._segments_to_basic_rows(
+                segments,
+                self.renderer.total_frames,
+                self.renderer.fps,
+                self.get_silence_seconds(),
+            )
+
+    def _segments_to_basic_rows(self, segments, total_frames=None, fps=None, min_silence=MIN_SILENCE_SECONDS):
+        rows = []
+        last_end = 0.0
+        speaker_name = self.renderer.yolo_id_to_speaker.get(1, "人物 1")
+        video_end = total_frames / max(fps, 1) if total_frames and fps else None
+
+        for segment in segments:
+            text = str(getattr(segment, "text", "") or "").strip()
+            words = [w for w in getattr(segment, "words", None) or [] if getattr(w, "word", "").strip()]
+            if words:
+                text = "".join(w.word.strip() for w in words).strip() or text
+                start = float(words[0].start)
+                end = float(words[-1].end)
+            else:
+                start = float(getattr(segment, "start", 0.0) or 0.0)
+                end = float(getattr(segment, "end", start) or start)
+            if not text or end <= start:
+                continue
+            if start - last_end >= min_silence:
+                rows.append({
+                    "時間": format_time_range(last_end, start),
+                    "說話者": SILENCE_SPEAKER,
+                    "對話": SILENCE_TEXT,
+                })
+            rows.append({
+                "時間": format_time_range(start, end),
+                "說話者": speaker_name,
+                "對話": text,
+            })
+            last_end = max(last_end, end)
+
+        if video_end and video_end - last_end >= min_silence:
+            rows.append({
+                "時間": format_time_range(last_end, video_end),
+                "說話者": SILENCE_SPEAKER,
+                "對話": SILENCE_TEXT,
+            })
+        return rows
 
     def _segments_to_rows(self, segments, total_frames=None, fps=None, min_silence=MIN_SILENCE_SECONDS, audio_path=None, model=None):
         audio, audio_rate = self._load_audio_for_timing(audio_path)

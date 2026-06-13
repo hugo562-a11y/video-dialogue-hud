@@ -9,7 +9,7 @@ if getattr(sys, "frozen", False):
         os.environ["PATH"] = _app_dir + os.pathsep + os.environ["PATH"]
 
 try:
-    import tqdm
+    import tqdm 
     tqdm.tqdm.monitor_interval = 0
 except Exception:
     pass

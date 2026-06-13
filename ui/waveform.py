@@ -23,7 +23,9 @@ class WaveformMixin:
         self._clear_waveform_audio_cache()
         fd, wav_path = tempfile.mkstemp(suffix="_waveform.wav")
         os.close(fd)
-        source_path = getattr(self.renderer, "source_video_path", None) or self.renderer.video_path
+        # Keep the calibration workspace on one timeline: waveform, speech,
+        # preview video, and scrub audio all use the proxy video.
+        source_path = self.renderer.video_path
         cmd = [
             ffmpeg, "-y", "-v", "error", "-i", get_safe_path(source_path),
             "-vn", "-ac", "1", "-ar", "16000", "-acodec", "pcm_s16le", wav_path
@@ -41,11 +43,10 @@ class WaveformMixin:
                 except OSError:
                     pass
                 return
-            raw = subprocess.check_output(
-                [ffmpeg, "-v", "error", "-i", wav_path, "-f", "s16le", "-"],
-                startupinfo=startupinfo,
-                timeout=60,
-            )
+            # Read WAV directly via Python (was: second ffmpeg subprocess)
+            import wave
+            with wave.open(wav_path, "rb") as wf:
+                raw = wf.readframes(wf.getnframes())
         except Exception:
             try:
                 os.remove(wav_path)
@@ -168,31 +169,55 @@ class WaveformMixin:
         except Exception:
             return 1
 
+    def schedule_waveform_refresh(self, delay_ms: int = 160):
+        after_id = getattr(self, "_waveform_refresh_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        self._waveform_refresh_after_id = self.after(delay_ms, self._run_waveform_refresh)
+
+    def _run_waveform_refresh(self):
+        self._waveform_refresh_after_id = None
+        self.draw_waveform(self.current_frame())
+
     # ------------------------------------------------------------------ 繪製
     def draw_waveform(self, playhead_frame=None):
         if not hasattr(self, "waveform_canvas"):
             return
         canvas = self.waveform_canvas
         canvas.delete("all")
+        self._waveform_playhead_id = None
         w = max(1, canvas.winfo_width() or 800)
         h = max(1, canvas.winfo_height() or 58)
         samples = self.waveform_samples
         if samples is None or len(samples) == 0:
-            canvas.create_text(w // 2, h // 2, text="聲波載入中", fill="#6B7280")
+            canvas.create_text(w // 2, h // 2, text="聲波載入中", fill="#AAAAAA")
             return
         self.waveform_dialogue_handles = []
         wave_top = 18
-        mid = wave_top + (h - wave_top) // 2
+        hz = h - wave_top
+        mid = wave_top + hz // 2
         count = len(samples)
         view_start, view_end = self.get_waveform_view_range()
         view_span = max(view_end - view_start, 0.001)
+        # --- draw waveform as a single PIL image (was 800+ per-pixel canvas lines) ---
+        from PIL import Image, ImageDraw
+        img = Image.new("RGBA", (w, hz))
+        draw = ImageDraw.Draw(img)
+        color = (56, 189, 248, 255)
+        mid_pil = hz // 2
         for x in range(w):
             seconds = view_start + (x / max(1, w - 1)) * view_span
             idx = int(seconds / max(self.waveform_step_seconds, 1e-6))
             if idx < 0 or idx >= count:
                 continue
-            amp = float(samples[idx]) * ((h - wave_top) * 0.42)
-            canvas.create_line(x, mid - amp, x, mid + amp, fill="#38BDF8")
+            amp = float(samples[idx]) * (hz * 0.42)
+            draw.line([(x, mid_pil - amp), (x, mid_pil + amp)], fill=color)
+        from PIL import ImageTk
+        self._waveform_image = ImageTk.PhotoImage(img)
+        canvas.create_image(0, wave_top, anchor="nw", image=self._waveform_image)
         self.draw_waveform_dialogue_labels(canvas, w, h)
         frame = playhead_frame
         if frame is None and self.slider_timeline.cget("state") == "normal":
@@ -204,7 +229,24 @@ class WaveformMixin:
             seconds = frame_to_seconds(frame, self.renderer.fps)
             px = self.seconds_to_waveform_x(seconds, w)
             px = max(0, min(w, px))
-            canvas.create_line(px, 0, px, h, fill="#FBBF24", width=2)
+            self._waveform_playhead_id = canvas.create_line(px, 0, px, h, fill="#46A3FF", width=2)
+
+    def update_waveform_playhead(self, playhead_frame):
+        if not hasattr(self, "waveform_canvas") or not self.renderer.total_frames:
+            return
+        canvas = self.waveform_canvas
+        w = max(1, canvas.winfo_width() or 800)
+        h = max(1, canvas.winfo_height() or 58)
+        seconds = frame_to_seconds(playhead_frame, self.renderer.fps)
+        px = max(0, min(w, self.seconds_to_waveform_x(seconds, w)))
+        playhead_id = getattr(self, "_waveform_playhead_id", None)
+        if playhead_id is not None:
+            try:
+                canvas.coords(playhead_id, px, 0, px, h)
+                return
+            except Exception:
+                pass
+        self._waveform_playhead_id = canvas.create_line(px, 0, px, h, fill="#46A3FF", width=2)
 
     def draw_waveform_dialogue_labels(self, canvas, width, height):
         dp = self.renderer.data_processor
@@ -235,16 +277,16 @@ class WaveformMixin:
             draw_x = min(visible_x2 - 1, visible_x + 1)
             draw_x2 = max(draw_x + 1, visible_x2 - 1)
             is_selected = row_idx == self.selected_dialogue_row
-            speaker_bg, speaker_accent = self.speaker_palette(speaker, row_idx) if hasattr(self, "speaker_palette") else ("#243B53", "#38BDF8")
-            fill = "#6B2630" if is_deleted else ("#6B4E16" if is_selected else speaker_bg)
-            outline = "#F87171" if is_deleted else ("#FBBF24" if is_selected else speaker_accent)
+            speaker_bg, speaker_accent = self.speaker_palette(speaker, row_idx) if hasattr(self, "speaker_palette") else ("#2D2D2D", "#46A3FF")
+            fill = "#5D2630" if is_deleted else ("#3D3D3D" if is_selected else speaker_bg)
+            outline = "#E74C3C" if is_deleted else ("#46A3FF" if is_selected else speaker_accent)
             width_px = 2 if is_selected else 1
             canvas.create_rectangle(draw_x, 18, draw_x2, height, fill=fill, stipple="gray25", outline="")
             canvas.create_rectangle(draw_x, 18, draw_x2, height, outline=outline, width=width_px)
             if 0 <= x <= width:
-                canvas.create_rectangle(max(0, x - 1), 18, min(width, x + 1), height, fill="#22C55E", outline="")
+                canvas.create_rectangle(max(0, x - 1), 18, min(width, x + 1), height, fill="#2ECC71", outline="")
             if 0 <= x2 <= width:
-                canvas.create_rectangle(max(0, x2 - 1), 18, min(width, x2 + 1), height, fill="#EF4444", outline="")
+                canvas.create_rectangle(max(0, x2 - 1), 18, min(width, x2 + 1), height, fill="#E74C3C", outline="")
             self.waveform_dialogue_handles.append({
                 "row_idx": row_idx, "start": start, "end": end, "x1": x, "x2": x2,
             })
@@ -253,7 +295,7 @@ class WaveformMixin:
                 continue
             last_x = label_x
             label = "剪" if is_deleted else text[:3]
-            label_color = "#FCA5A5" if is_deleted else ("#FFF3B0" if is_selected else speaker_accent)
+            label_color = "#E74C3C" if is_deleted else ("#46A3FF" if is_selected else speaker_accent)
             canvas.create_text(
                 label_x + 3, 4, anchor="nw", text=label, fill=label_color,
                 font=("Microsoft JhengHei UI", 9, "bold" if is_selected else "normal"),
@@ -452,6 +494,7 @@ class WaveformMixin:
         self.seek_to_frame(self._frame_from_waveform_x(event.x), play_sound=False)
 
     def on_waveform_drag(self, event):
+        self._waveform_drag_moved = True
         if self.waveform_drag_handle:
             if self._waveform_drag_mode == "range":
                 self.update_waveform_range_drag(event.x)
@@ -470,6 +513,14 @@ class WaveformMixin:
             if mode == "pan" and not moved:
                 frame = self._frame_from_waveform_x(event.x)
                 self.seek_to_frame(frame, play_sound=bool(self.audio_scrub_var.get()))
+            return
+        # 純點擊無拖曳 → 不修改資料、不播放聲音
+        if not self._waveform_drag_moved:
+            self.waveform_drag_handle = None
+            self._waveform_drag_mode = None
+            self._waveform_range_drag_start = None
+            self._waveform_undo_pushed = False
+            self.waveform_canvas.configure(cursor="")
             return
         if self._waveform_drag_mode == "range":
             frame = self.update_waveform_range_drag(event.x)
@@ -584,7 +635,5 @@ class WaveformMixin:
         start, end = parse_time_range(dp.df.at[self.selected_dialogue_row, time_col])
         if start is None or end is None:
             return "break"
-        frame = seconds_to_frame(start, self.renderer.fps, self.renderer.total_frames)
-        self.seek_to_frame(frame, play_sound=False)
-        self.play_audio_preview(frame, duration=max(0.15, end - start), force=True)
+        self.start_preview_range(start, end)
         return "break"

@@ -1,6 +1,7 @@
 """DataProcessor — 負責對話腳本的載入、解析與編輯。"""
 from __future__ import annotations
 
+import bisect
 import os
 
 import pandas as pd
@@ -23,11 +24,17 @@ class DataProcessor:
         self.df: pd.DataFrame | None = None
         self.path: str | None = None
         self._dialogue_cache: list[dict] | None = None
+        self._dialogue_cache_starts: list[float] | None = None
         self._dialogue_cache_df_id: int | None = None
+        self._columns_cache: tuple | None = None
+        self._columns_cache_df_id: int | None = None
 
     def invalidate_cache(self) -> None:
         self._dialogue_cache = None
+        self._dialogue_cache_starts = None
         self._dialogue_cache_df_id = None
+        self._columns_cache = None
+        self._columns_cache_df_id = None
 
     # ------------------------------------------------------------------ 載入
     def load_data(self, file_path: str) -> tuple[bool, str]:
@@ -161,10 +168,15 @@ class DataProcessor:
     def get_columns(self):
         if not self.has_data():
             return None, None, None
+        df_id = id(self.df)
+        if self._columns_cache is not None and self._columns_cache_df_id == df_id:
+            return self._columns_cache
         time_col = find_column(self.df.columns, ["時間", "time", "start"])
         speaker_col = find_column(self.df.columns, ["說話者", "speaker", "人物", "角色", "id"])
         text_col = find_column(self.df.columns, ["對話", "內容", "文字", "text", "content"])
-        return time_col, speaker_col, text_col
+        self._columns_cache = (time_col, speaker_col, text_col)
+        self._columns_cache_df_id = df_id
+        return self._columns_cache
 
     def get_unique_speakers(self) -> list[str]:
         if not self.has_data():
@@ -187,6 +199,7 @@ class DataProcessor:
         time_col, speaker_col, text_col = self.get_columns()
         if time_col is None or text_col is None:
             self._dialogue_cache = []
+            self._dialogue_cache_starts = []
             self._dialogue_cache_df_id = df_id
             return []
 
@@ -209,6 +222,7 @@ class DataProcessor:
             })
 
         self._dialogue_cache = rows
+        self._dialogue_cache_starts = [r["start"] for r in rows]
         self._dialogue_cache_df_id = df_id
         return rows
 
@@ -222,24 +236,31 @@ class DataProcessor:
 
     def find_dialogue_row(self, frame_idx: int, fps: float, track_id: int, manual_speaker: str = ""):
         time_sec = frame_to_seconds(frame_idx, fps)
-        for row in self._dialogue_rows():
-            if row["deleted"] or row["speaker"] == SILENCE_SPEAKER:
-                continue
-            if manual_speaker and row["speaker"] and row["speaker"] != manual_speaker:
-                continue
-            if row["start"] <= time_sec < row["end"]:
-                return row["idx"], row["text"]
+        rows = self._dialogue_rows()
+        if not rows or self._dialogue_cache_starts is None:
+            return None, ""
+        pos = bisect.bisect_right(self._dialogue_cache_starts, time_sec) - 1
+        if pos < 0:
+            return None, ""
+        row = rows[pos]
+        if (not row["deleted"] and row["speaker"] != SILENCE_SPEAKER
+                and (not manual_speaker or not row["speaker"] or row["speaker"] == manual_speaker)
+                and row["start"] <= time_sec < row["end"]):
+            return row["idx"], row["text"]
         return None, ""
 
     def find_dialogue_at_time(self, frame_idx: int, fps: float):
-        if not self.has_data():
-            return None, ""
         time_sec = frame_to_seconds(frame_idx, fps)
-        for row in self._dialogue_rows():
-            if row["deleted"] or row["speaker"] == SILENCE_SPEAKER:
-                continue
-            if row["start"] <= time_sec < row["end"]:
-                return row["idx"], row["text"]
+        rows = self._dialogue_rows()
+        if not rows or self._dialogue_cache_starts is None:
+            return None, ""
+        pos = bisect.bisect_right(self._dialogue_cache_starts, time_sec) - 1
+        if pos < 0:
+            return None, ""
+        row = rows[pos]
+        if (not row["deleted"] and row["speaker"] != SILENCE_SPEAKER
+                and row["start"] <= time_sec < row["end"]):
+            return row["idx"], row["text"]
         return None, ""
 
     def get_dialogue_row_values(self, row_idx) -> tuple[str, str]:
@@ -400,7 +421,7 @@ class DataProcessor:
         return True
 
     # ------------------------------------------------------------------ 結構操作
-    def split_dialogue_row(self, row_idx, cursor_pos: int) -> tuple[bool, str, int | None]:
+    def split_dialogue_row(self, row_idx, cursor_pos: int, reset_index: bool = True) -> tuple[bool, str, int | None]:
         time_col, speaker_col, text_col = self.get_columns()
         if time_col is None or text_col is None:
             return False, "腳本格式不完整，無法斷句。", None
@@ -427,17 +448,38 @@ class DataProcessor:
         second[time_col] = format_time_range(split_at, end)
         second[text_col] = right_text
 
-        rows = []
-        new_second_idx = None
-        for idx, row in self.df.iterrows():
-            if idx == row_idx:
-                rows.append(first)
-                rows.append(second)
-                new_second_idx = len(rows) - 1
-            else:
-                rows.append(row.to_dict())
-        # reset_index 確保索引連續，避免後續混用 positional / label index
-        self.df = pd.DataFrame(rows, columns=columns).reset_index(drop=True)
+        if reset_index:
+            rows = []
+            new_second_idx = None
+            for idx, row in self.df.iterrows():
+                if idx == row_idx:
+                    rows.append(first)
+                    rows.append(second)
+                    new_second_idx = len(rows) - 1
+                else:
+                    rows.append(row.to_dict())
+            # reset_index 確保索引連續，避免後續混用 positional / label index
+            self.df = pd.DataFrame(rows, columns=columns).reset_index(drop=True)
+        else:
+            numeric_indices = []
+            for existing_idx in self.df.index:
+                try:
+                    numeric_indices.append(int(existing_idx))
+                except (TypeError, ValueError):
+                    continue
+            new_second_idx = max(numeric_indices or [-1]) + 1
+            rows = []
+            index = []
+            for idx, row in self.df.iterrows():
+                if idx == row_idx:
+                    rows.append(first)
+                    index.append(idx)
+                    rows.append(second)
+                    index.append(new_second_idx)
+                else:
+                    rows.append(row.to_dict())
+                    index.append(idx)
+            self.df = pd.DataFrame(rows, columns=columns, index=index)
         self.ensure_internal_columns()
         self.invalidate_cache()
         return True, "已斷成兩句。", new_second_idx

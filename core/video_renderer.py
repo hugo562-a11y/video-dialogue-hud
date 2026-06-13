@@ -187,6 +187,12 @@ class VideoRenderer:
             position = self.default_bubble_position(track_id)
         return {"style": style_name, "color": color_name, "position": position}
 
+    def clear_bubble_cache(self, track_id: int | None = None):
+        if track_id is None:
+            self.bubble_cache.clear()
+        else:
+            self.bubble_cache = {k: v for k, v in self.bubble_cache.items() if k[2] != track_id}
+
     def set_person_bubble_style(
         self,
         track_id: int,
@@ -203,7 +209,7 @@ class VideoRenderer:
         if position in BUBBLE_POSITION_OPTIONS:
             current["position"] = position
         self.person_styles[track_id] = current
-        self.bubble_cache.clear()
+        self.clear_bubble_cache(track_id)
 
     def get_speech_bubble_img(self, text: str, pos: str = "top", track_id: int = 0):
         person_style = self.get_person_bubble_style(track_id)

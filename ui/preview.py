@@ -24,7 +24,11 @@ class PreviewMixin:
         ow, oh = self.preview_pil_orig.size
         nw = max(1, int(ow * self.preview_zoom))
         nh = max(1, int(oh * self.preview_zoom))
-        scaled = self.preview_pil_orig.resize((nw, nh), Image.Resampling.LANCZOS)
+        if nw == ow and nh == oh:
+            scaled = self.preview_pil_orig
+        else:
+            resample = Image.Resampling.BILINEAR if getattr(self, "preview_playing", False) else Image.Resampling.LANCZOS
+            scaled = self.preview_pil_orig.resize((nw, nh), resample)
         self._canvas_tk_img = ImageTk.PhotoImage(scaled)
         cw = self.preview_canvas.winfo_width() or 600
         ch = self.preview_canvas.winfo_height() or 400
@@ -32,12 +36,13 @@ class PreviewMixin:
         cy = ch // 2 + self.canvas_offset[1]
         self.preview_canvas.delete("all")
         self.preview_canvas.create_image(cx, cy, anchor="center", image=self._canvas_tk_img)
-        self._draw_person_rois_on_canvas()
-        self._draw_preview_boxes_on_canvas()
+        if not getattr(self, "preview_playing", False):
+            self._draw_person_rois_on_canvas()
+            self._draw_preview_boxes_on_canvas()
         self.preview_canvas.create_text(
             cw - 8, ch - 8, anchor="se",
             text=f"{int(self.preview_zoom * 100)}%",
-            fill="#AAB0C0", font=("Consolas", 11),
+            fill="#999999", font=("Consolas", 10),
         )
 
     def _draw_person_rois_on_canvas(self):
@@ -199,7 +204,7 @@ class PreviewMixin:
                 self.preview_canvas.delete(self._roi_rect_id)
             sx, sy = self._roi_start
             self._roi_rect_id = self.preview_canvas.create_rectangle(
-                sx, sy, event.x, event.y, outline="#43E2A8", width=2, dash=(6, 3)
+                sx, sy, event.x, event.y, outline="#46A3FF", width=1, dash=(4, 3)
             )
         elif self._canvas_mode == "bubble" and self._bubble_drag_tid is not None:
             ox, oy = self._bubble_drag_start_offset
